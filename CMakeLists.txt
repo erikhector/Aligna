@@ -43,6 +43,7 @@ target_sources(aligna_core PRIVATE
   src/edit/DragMath.cpp
   src/edit/EditHistory.cpp
   src/io/ProjectFile.cpp
+  src/io/FileNaming.cpp
   src/engine/Mixer.cpp
   src/engine/PlaybackChain.cpp
   src/engine/PlaybackEngine.cpp
@@ -111,6 +112,7 @@ add_executable(aligna_tests
   tests/DragMathTest.cpp
   tests/AlignTest.cpp
   tests/AlignResultsTest.cpp
+  tests/FileNamingTest.cpp
 )
 target_link_libraries(aligna_tests PRIVATE aligna_core Catch2::Catch2WithMain)
 list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)

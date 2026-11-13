@@ -13,8 +13,20 @@ public:
     bool moreThanOneInstanceAllowed() override { return true; }
 
     void initialise(const juce::String&) override { controller = std::make_unique<AppController>(); mainWindow = std::make_unique<MainWindow>(getApplicationName(), *controller); }
-    void shutdown() override { mainWindow.reset(); controller.reset(); }
-    void systemRequestedQuit() override { quit(); }
+    void shutdown() override
+    {
+        if (mainWindow != nullptr)
+            mainWindow->closeDialogs();
+        mainWindow.reset(); // before the controller
+        controller.reset();
+    }
+    void systemRequestedQuit() override
+    {
+        if (mainWindow != nullptr)
+            mainWindow->requestQuit(); // asks about unsaved changes first
+        else
+            quit();
+    }
 
 private:
     class MainWindow : public juce::DocumentWindow
@@ -24,15 +36,19 @@ private:
             : DocumentWindow(name, juce::Colour(0xff1e1f22), DocumentWindow::allButtons)
         {
             setUsingNativeTitleBar(true);
-            setContentOwned(new MainComponent(c), true);
+            main = new MainComponent(c);
+            setContentOwned(main, true);
             setResizable(true, true);
             centreWithSize(1200, 800);
             setVisible(true);
         }
 
+        void requestQuit() { main->requestQuit(); }
+        void closeDialogs() { main->closeDialogs(); }
         void closeButtonPressed() override { juce::JUCEApplication::getInstance()->systemRequestedQuit(); }
 
     private:
+        MainComponent* main = nullptr; // owned as the content component
         JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainWindow)
     };
 

@@ -18,8 +18,14 @@ public:
     void paint(juce::Graphics&) override;
     void resized() override;
     bool keyPressed(const juce::KeyPress&) override;
+    void parentHierarchyChanged() override;
 
-    // MenuBarModel. Menus are listed in menuNames(); Task 13 adds "File" there and in menuFor()/menuItemSelected().
+    // Asks about unsaved changes (async), then quits the application. Safe to call repeatedly.
+    void requestQuit();
+    // Closes every dialog this window owns (Audio settings, Align, export progress). Called before shutdown.
+    void closeDialogs();
+
+    // MenuBarModel. Menus: File, Edit.
     juce::StringArray getMenuBarNames() override;
     juce::PopupMenu getMenuForIndex(int index, const juce::String& name) override;
     void menuItemSelected(int menuItemID, int topLevelMenuIndex) override;
@@ -31,13 +37,24 @@ public:
     TimelineState& timelineState() { return tlState; }
 
 private:
-    enum MenuIds { menuUndo = 1, menuRedo, menuAlign };
+    enum MenuIds { menuUndo = 1, menuRedo, menuAlign, menuNew, menuOpen, menuSave, menuSaveAs, menuImport, menuExport, menuQuit };
     static constexpr int menuBarHeight = 24;
+    juce::PopupMenu fileMenu();
     juce::PopupMenu editMenu();
     void importAndReport(const juce::Array<juce::File>&);
     void undo();
     void redo();
     void chooseImport();
+    void updateTitle();
+    void confirmDiscard(std::function<void()> proceed); // proceeds at once if clean; else Save / Don't Save / Cancel
+    void saveThen(std::function<void()> proceed);       // Save (or Save As); proceeds only on success
+    void saveAs(std::function<void()> proceed);
+    bool doSave(const juce::File&);
+    void runFileCommand(int menuId);
+    void doNew();
+    void doOpen();
+    void doExport();
+    void startExport(int bitDepth, const juce::File&);
     void projectChanged();
     void layoutHeaders();
     std::vector<juce::String> alignTargets() const; // selected clips other than the reference, project order
@@ -52,6 +69,8 @@ private:
     juce::Component headerColumn; // clips its children; headers scroll vertically with the lanes
     std::vector<std::unique_ptr<TrackHeader>> headers;
     std::unique_ptr<juce::FileChooser> chooser;
+    std::unique_ptr<juce::ThreadWithProgressWindow> exportTask;
+    bool promptActive = false;
     std::unique_ptr<juce::DialogWindow> alignWindow; // at most one, non-modal
     std::unique_ptr<juce::MenuBarComponent> menuBar; // not used on macOS (native menu bar)
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainComponent)

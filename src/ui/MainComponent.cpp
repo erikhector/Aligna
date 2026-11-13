@@ -1,5 +1,7 @@
 #include "ui/MainComponent.h"
 
+#include "engine/Mixer.h"
+#include "io/FileNaming.h"
 #include <set>
 
 namespace aligna
@@ -13,7 +15,6 @@ MainComponent::MainComponent(AppController& a) : app(a), transport(a, tlState), 
     timeline.onViewChanged = [this] { layoutHeaders(); };
     app.onProjectChanged = [this] { projectChanged(); };
     projectChanged();
-    transport.importButton.onClick = [this] { chooseImport(); };
     setWantsKeyboardFocus(true);
 #if JUCE_MAC
     juce::MenuBarModel::setMacMainMenu(this);
@@ -30,15 +31,31 @@ MainComponent::MainComponent(AppController& a) : app(a), transport(a, tlState), 
 
 MainComponent::~MainComponent()
 {
-    alignWindow.reset(); // stops the worker thread before anything else goes away
+    closeDialogs();
 #if JUCE_MAC
     juce::MenuBarModel::setMacMainMenu(nullptr);
 #endif
     app.onProjectChanged = nullptr;
 }
 
+void MainComponent::closeDialogs()
+{
+    exportTask.reset(); // stops the export thread
+    alignWindow.reset(); // stops the align worker thread
+    transport.closeDialogs();
+}
+
+void MainComponent::parentHierarchyChanged() { updateTitle(); }
+
+void MainComponent::updateTitle()
+{
+    if (auto* w = findParentComponentOfClass<juce::DocumentWindow>())
+        w->setName(windowTitle(app.currentFile().getFileName(), app.history().isDirty()));
+}
+
 void MainComponent::projectChanged()
 {
+    updateTitle();
     const auto& tracks = app.history().current().tracks;
     bool same = headers.size() == tracks.size();
     for (size_t i = 0; same && i < tracks.size(); ++i)
@@ -192,10 +209,280 @@ void MainComponent::closeAlignDialog()
     timeline.grabKeyboardFocus();
 }
 
+
+void MainComponent::requestQuit()
+{
+    if (promptActive)
+        return;
+    confirmDiscard([] { juce::JUCEApplication::quit(); });
+}
+
+void MainComponent::confirmDiscard(std::function<void()> proceed)
+{
+    if (! app.history().isDirty())
+    {
+        proceed();
+        return;
+    }
+    promptActive = true;
+    juce::Component::SafePointer<MainComponent> safe(this);
+    auto opts = juce::MessageBoxOptions()
+                    .withIconType(juce::MessageBoxIconType::QuestionIcon)
+                    .withTitle("Unsaved changes")
+                    .withMessage("Do you want to save the changes to this project?")
+                    .withButton("Save")
+                    .withButton("Don't Save")
+                    .withButton("Cancel")
+                    .withAssociatedComponent(this);
+    juce::AlertWindow::showAsync(opts, [safe, proceed](int r) {
+        if (safe == nullptr)
+            return;
+        safe->promptActive = false;
+        if (r == 1) // Save
+            safe->saveThen(proceed);
+        else if (r == 2) // Don't Save
+            proceed();
+        // else Cancel: nothing
+    });
+}
+
+bool MainComponent::doSave(const juce::File& f)
+{
+    juce::String err;
+    const bool ok = app.saveProject(f, err);
+    if (! ok)
+        juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon, "Could not save project", err);
+    updateTitle();
+    return ok;
+}
+
+void MainComponent::saveThen(std::function<void()> proceed)
+{
+    if (app.currentFile() != juce::File())
+    {
+        if (doSave(app.currentFile()) && proceed)
+            proceed();
+        return;
+    }
+    saveAs(std::move(proceed));
+}
+
+void MainComponent::saveAs(std::function<void()> proceed)
+{
+    const auto start = app.currentFile() != juce::File()
+                           ? app.currentFile()
+                           : juce::File::getSpecialLocation(juce::File::userDocumentsDirectory).getChildFile("Untitled.aligna");
+    chooser = std::make_unique<juce::FileChooser>("Save project", start, "*.aligna");
+    juce::Component::SafePointer<MainComponent> safe(this);
+    chooser->launchAsync(juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles
+                             | juce::FileBrowserComponent::warnAboutOverwriting,
+                         [safe, proceed](const juce::FileChooser& fc) {
+                             if (safe == nullptr)
+                                 return;
+                             auto f = fc.getResult();
+                             if (f != juce::File())
+                             {
+                                 f = f.getParentDirectory().getChildFile(withExtension(f.getFileName(), ".aligna"));
+                                 if (safe->doSave(f) && proceed)
+                                     proceed();
+                             }
+                             safe->timeline.grabKeyboardFocus();
+                         });
+}
+
+void MainComponent::doNew()
+{
+    auto* w = new juce::AlertWindow("New project", "Sample rate of the new project:", juce::MessageBoxIconType::NoIcon, this);
+    w->addComboBox("rate", { "44100 Hz", "48000 Hz" });
+    w->getComboBoxComponent("rate")->setSelectedItemIndex(1);
+    w->addButton("Create", 1, juce::KeyPress(juce::KeyPress::returnKey));
+    w->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+    juce::Component::SafePointer<MainComponent> safe(this);
+    w->enterModalState(true,
+                       juce::ModalCallbackFunction::create([safe, w](int r) {
+                           if (r != 1 || safe == nullptr)
+                               return;
+                           const double rate = w->getComboBoxComponent("rate")->getSelectedItemIndex() == 0 ? 44100.0 : 48000.0;
+                           safe->tlState.timeSelection.reset();
+                           safe->app.newProject(rate);
+                           safe->timeline.grabKeyboardFocus();
+                       }),
+                       true);
+}
+
+void MainComponent::doOpen()
+{
+    chooser = std::make_unique<juce::FileChooser>("Open project", app.currentFile(), "*.aligna");
+    juce::Component::SafePointer<MainComponent> safe(this);
+    chooser->launchAsync(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+                         [safe](const juce::FileChooser& fc) {
+                             if (safe == nullptr)
+                                 return;
+                             const auto f = fc.getResult();
+                             if (f != juce::File())
+                             {
+                                 juce::String err;
+                                 safe->tlState.timeSelection.reset();
+                                 if (! safe->app.openProject(f, err))
+                                     juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon,
+                                                                            "Could not open project", err);
+                                 else
+                                 {
+                                     std::vector<juce::String> missing;
+                                     for (auto& s : safe->app.history().current().sources)
+                                         if (s.missing)
+                                             missing.push_back(s.path);
+                                     if (! missing.empty())
+                                         juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon,
+                                                                                "Missing audio files",
+                                                                                missingFilesMessage(missing));
+                                 }
+                                 safe->updateTitle();
+                             }
+                             safe->timeline.grabKeyboardFocus();
+                         });
+}
+
+void MainComponent::doExport()
+{
+    if (projectEnd(app.history().current()) <= 0)
+    {
+        juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::InfoIcon, "Export mix", "Nothing to export.");
+        return;
+    }
+    auto* w = new juce::AlertWindow("Export mix", "Bit depth of the exported WAV file:", juce::MessageBoxIconType::NoIcon, this);
+    w->addComboBox("depth", { "16-bit", "24-bit" });
+    w->getComboBoxComponent("depth")->setSelectedItemIndex(1);
+    w->addButton("Export...", 1, juce::KeyPress(juce::KeyPress::returnKey));
+    w->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+    juce::Component::SafePointer<MainComponent> safe(this);
+    w->enterModalState(true,
+                       juce::ModalCallbackFunction::create([safe, w](int r) {
+                           if (r != 1 || safe == nullptr)
+                               return;
+                           const int depth = w->getComboBoxComponent("depth")->getSelectedItemIndex() == 0 ? 16 : 24;
+                           auto& self = *safe;
+                           auto base = self.app.currentFile() != juce::File()
+                                           ? self.app.currentFile().withFileExtension("wav")
+                                           : juce::File::getSpecialLocation(juce::File::userDocumentsDirectory)
+                                                 .getChildFile("Mix.wav");
+                           self.chooser = std::make_unique<juce::FileChooser>("Export mix", base, "*.wav");
+                           self.chooser->launchAsync(
+                               juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles
+                                   | juce::FileBrowserComponent::warnAboutOverwriting,
+                               [safe, depth](const juce::FileChooser& fc) {
+                                   if (safe == nullptr)
+                                       return;
+                                   auto f = fc.getResult();
+                                   if (f != juce::File())
+                                       safe->startExport(depth, f.getParentDirectory().getChildFile(
+                                                                    withExtension(f.getFileName(), ".wav")));
+                                   else
+                                       safe->timeline.grabKeyboardFocus();
+                               });
+                       }),
+                       true);
+}
+
+namespace
+{
+class ExportTask : public juce::ThreadWithProgressWindow
+{
+public:
+    ExportTask(std::shared_ptr<const MixSnapshot> s, juce::File f, int d, std::function<void(bool, juce::String)> done,
+               juce::Component* around)
+        : ThreadWithProgressWindow("Exporting mix...", true, true, 10000, {}, around),
+          snap(std::move(s)), file(std::move(f)), depth(d), onDone(std::move(done))
+    {
+    }
+    void run() override
+    {
+        ok = exportMix(*snap, file, depth, error, [this](float p) {
+            setProgress(p);
+            return ! threadShouldExit();
+        });
+    }
+    void threadComplete(bool) override { onDone(ok, error); }
+
+private:
+    std::shared_ptr<const MixSnapshot> snap;
+    juce::File file;
+    int depth;
+    std::function<void(bool, juce::String)> onDone;
+    bool ok = false;
+    juce::String error;
+};
+} // namespace
+
+void MainComponent::startExport(int bitDepth, const juce::File& f)
+{
+    // Snapshot on the message thread; the worker only reads it.
+    auto snap = makeSnapshot(app.history().current(), app.pool());
+    juce::Component::SafePointer<MainComponent> safe(this);
+    exportTask = std::make_unique<ExportTask>(
+        std::move(snap), f, bitDepth,
+        [safe](bool ok, juce::String err) {
+            juce::MessageManager::callAsync([safe, ok, err] {
+                if (safe == nullptr)
+                    return;
+                safe->exportTask.reset();
+                if (! ok && err != "Export cancelled")
+                    juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon, "Export failed", err);
+                safe->timeline.grabKeyboardFocus();
+            });
+        },
+        this);
+    static_cast<ExportTask*>(exportTask.get())->launchThread();
+}
+
+void MainComponent::runFileCommand(int id)
+{
+    switch (id)
+    {
+        case menuNew: confirmDiscard([this] { doNew(); }); break;
+        case menuOpen: confirmDiscard([this] { doOpen(); }); break;
+        case menuSave: saveThen({}); break;
+        case menuSaveAs: saveAs({}); break;
+        case menuImport: chooseImport(); break;
+        case menuExport: doExport(); break;
+        case menuQuit: requestQuit(); break;
+        default: break;
+    }
+}
+
 void MainComponent::undo() { app.history().undo(); }
 void MainComponent::redo() { app.history().redo(); }
 
-juce::StringArray MainComponent::getMenuBarNames() { return { "Edit" }; }
+juce::StringArray MainComponent::getMenuBarNames() { return { "File", "Edit" }; }
+
+juce::PopupMenu MainComponent::fileMenu()
+{
+#if JUCE_MAC
+    const juce::String mod = "Cmd+";
+#else
+    const juce::String mod = "Ctrl+";
+#endif
+    juce::PopupMenu m;
+    auto add = [&](int id, const juce::String& name, const juce::String& key) {
+        juce::PopupMenu::Item it(name);
+        it.itemID = id;
+        if (key.isNotEmpty())
+            it.shortcutKeyDescription = mod + key;
+        m.addItem(it);
+    };
+    add(menuNew, "New...", "N");
+    add(menuOpen, "Open...", "O");
+    add(menuSave, "Save", "S");
+    add(menuSaveAs, "Save As...", "Shift+S");
+    m.addSeparator();
+    add(menuImport, "Import Audio...", "I");
+    add(menuExport, "Export Mix...", "E");
+#if ! JUCE_MAC
+    m.addSeparator();
+    add(menuQuit, "Quit", "Q");
+#endif
+    return m;
+}
 
 juce::PopupMenu MainComponent::editMenu()
 {
@@ -227,6 +514,8 @@ juce::PopupMenu MainComponent::editMenu()
 
 juce::PopupMenu MainComponent::getMenuForIndex(int, const juce::String& name)
 {
+    if (name == "File")
+        return fileMenu();
     if (name == "Edit")
         return editMenu();
     return {};
@@ -240,6 +529,8 @@ void MainComponent::menuItemSelected(int id, int)
         redo();
     else if (id == menuAlign)
         openAlignDialog();
+    else
+        runFileCommand(id);
     if (alignWindow == nullptr)
         timeline.grabKeyboardFocus();
 }
@@ -261,6 +552,27 @@ bool MainComponent::keyPressed(const juce::KeyPress& k)
         else
             undo();
         return true;
+    }
+    if (cmd)
+    {
+        int id = 0;
+        switch (code)
+        {
+            case 'N': id = menuNew; break;
+            case 'O': id = menuOpen; break;
+            case 'S': id = mods.isShiftDown() ? menuSaveAs : menuSave; break;
+            case 'I': id = menuImport; break;
+            case 'E': id = menuExport; break;
+#if ! JUCE_MAC
+            case 'Q': id = menuQuit; break;
+#endif
+            default: break;
+        }
+        if (id != 0)
+        {
+            runFileCommand(id);
+            return true;
+        }
     }
     if (cmd && code == 'L')
     {

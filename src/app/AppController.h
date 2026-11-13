@@ -19,7 +19,7 @@ public:
 
     // One new track per file, as a single undoable "Import". Per-file errors go to `errors`, one line each.
     void importFiles(const juce::Array<juce::File>& files, juce::String& errors);
-    void newProject();
+    void newProject(double sampleRate = 48000); // fixed for the project's lifetime
     bool openProject(const juce::File& file, juce::String& error);
     bool saveProject(const juce::File& file, juce::String& error);
     juce::File currentFile() const { return file; }

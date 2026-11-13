@@ -51,13 +51,15 @@ void AppController::importFiles(const juce::Array<juce::File>& files, juce::Stri
     });
 }
 
-void AppController::newProject()
+void AppController::newProject(double sampleRate)
 {
     engine().pause();
     engine().setPosition(0);
     sources.clear();
     file = juce::File();
-    hist.reset(Project {});
+    Project p;
+    p.sampleRate = sampleRate;
+    hist.reset(std::move(p));
     syncProjectRate();
     rebuildSnapshot();
 }

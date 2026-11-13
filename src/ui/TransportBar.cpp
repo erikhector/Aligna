@@ -17,7 +17,7 @@ juce::String formatPosition(SamplePos pos, const Project& p)
 
 TransportBar::TransportBar(AppController& a, TimelineState& st) : app(a), tlState(st)
 {
-    for (auto* c : std::initializer_list<juce::Component*> { &importButton, &playButton, &stopButton, &audioButton,
+    for (auto* c : std::initializer_list<juce::Component*> { &playButton, &stopButton, &audioButton,
                                                               &position, &bpmLabel, &bpmField, &snapButton, &gridBox })
     {
         addAndMakeVisible(*c);
@@ -83,17 +83,46 @@ void TransportBar::commitBpm()
     bpmField.setText(juce::String(v, 2).trimCharactersAtEnd("0").trimCharactersAtEnd("."), juce::dontSendNotification);
 }
 
+namespace
+{
+class AudioWindow : public juce::DialogWindow
+{
+public:
+    explicit AudioWindow(std::function<void()> closeFn)
+        : juce::DialogWindow("Audio settings", juce::Colour(0xff26282c), true), onClose(std::move(closeFn))
+    {
+    }
+    void closeButtonPressed() override { onClose(); }
+
+private:
+    std::function<void()> onClose;
+};
+} // namespace
+
+void TransportBar::closeDialogs() { audioWindow.reset(); }
+
 void TransportBar::showAudioSettings()
 {
+    if (audioWindow != nullptr)
+    {
+        audioWindow->toFront(true);
+        return;
+    }
+    juce::Component::SafePointer<TransportBar> safe(this);
+    auto win = std::make_unique<AudioWindow>([safe] {
+        // Deferred: the window must not be deleted from inside its own callback.
+        juce::MessageManager::callAsync([safe] {
+            if (safe != nullptr)
+                safe->closeDialogs();
+        });
+    });
     auto* sel = new juce::AudioDeviceSelectorComponent(app.devices(), 0, 0, 2, 2, false, false, true, false);
     sel->setSize(480, 360);
-    juce::DialogWindow::LaunchOptions o;
-    o.content.setOwned(sel);
-    o.dialogTitle = "Audio settings";
-    o.componentToCentreAround = this;
-    o.useNativeTitleBar = true;
-    o.resizable = false;
-    o.launchAsync();
+    win->setContentOwned(sel, true);
+    win->setUsingNativeTitleBar(true);
+    win->centreAroundComponent(this, win->getWidth(), win->getHeight());
+    win->setVisible(true);
+    audioWindow = std::move(win);
 }
 
 void TransportBar::paint(juce::Graphics& g) { g.fillAll(juce::Colour(0xff2a2c30)); }
@@ -101,8 +130,6 @@ void TransportBar::paint(juce::Graphics& g) { g.fillAll(juce::Colour(0xff2a2c30)
 void TransportBar::resized()
 {
     auto r = getLocalBounds().reduced(6);
-    importButton.setBounds(r.removeFromLeft(90));
-    r.removeFromLeft(12);
     playButton.setBounds(r.removeFromLeft(70));
     r.removeFromLeft(4);
     stopButton.setBounds(r.removeFromLeft(70));

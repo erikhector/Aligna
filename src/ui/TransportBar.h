@@ -15,7 +15,7 @@ public:
     void togglePlay();
     void refresh();
 
-    juce::TextButton importButton { "Import..." };
+    void closeDialogs(); // closes the Audio Settings dialog if open
 
 private:
     void timerCallback() override { refresh(); }
@@ -24,6 +24,7 @@ private:
 
     AppController& app;
     TimelineState& tlState;
+    std::unique_ptr<juce::DialogWindow> audioWindow; // owned here so it cannot outlive AppController's device manager
     juce::TextButton snapButton { "Snap" };
     juce::ComboBox gridBox;
     juce::TextButton playButton { "Play" }, stopButton { "Stop" }, audioButton { "Audio settings..." };
