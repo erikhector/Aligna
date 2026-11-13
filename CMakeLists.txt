@@ -43,6 +43,7 @@ target_sources(aligna_core PRIVATE
   src/edit/EditHistory.cpp
   src/io/ProjectFile.cpp
   src/engine/Mixer.cpp
+  src/engine/PlaybackEngine.cpp
   src/engine/SourcePool.cpp
   src/model/Grid.cpp
 )
@@ -70,6 +71,8 @@ juce_add_gui_app(Aligna
   VERSION ${PROJECT_VERSION})
 target_sources(Aligna PRIVATE
   src/app/Main.cpp
+  src/app/AppController.cpp
+  src/ui/TransportBar.cpp
   src/ui/MainComponent.cpp
 )
 target_compile_definitions(Aligna PRIVATE JUCE_STANDALONE_APPLICATION=1)
@@ -78,6 +81,7 @@ target_link_libraries(Aligna
     aligna_core
     juce::juce_gui_basics
     juce::juce_gui_extra
+    juce::juce_audio_utils
     juce::juce_recommended_lto_flags)
 
 # ---------------------------------------------------------------------------
@@ -92,6 +96,7 @@ add_executable(aligna_tests
   tests/ProjectFileTest.cpp
   tests/MixerTest.cpp
   tests/SourcePoolTest.cpp
+  tests/PlaybackEngineTest.cpp
 )
 target_link_libraries(aligna_tests PRIVATE aligna_core Catch2::Catch2WithMain)
 list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)
