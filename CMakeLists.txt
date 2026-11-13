@@ -47,6 +47,7 @@ target_sources(aligna_core PRIVATE
   src/engine/PlaybackEngine.cpp
   src/engine/SourcePool.cpp
   src/model/Grid.cpp
+  src/ui/TimelineMapping.cpp
 )
 target_include_directories(aligna_core PUBLIC src)
 target_compile_features(aligna_core PUBLIC cxx_std_20)
@@ -74,6 +75,8 @@ target_sources(Aligna PRIVATE
   src/app/Main.cpp
   src/app/AppController.cpp
   src/ui/TransportBar.cpp
+  src/ui/TrackHeader.cpp
+  src/ui/TimelineView.cpp
   src/ui/MainComponent.cpp
 )
 target_compile_definitions(Aligna PRIVATE JUCE_STANDALONE_APPLICATION=1)
@@ -99,6 +102,7 @@ add_executable(aligna_tests
   tests/SourcePoolTest.cpp
   tests/PlaybackEngineTest.cpp
   tests/PlaybackChainTest.cpp
+  tests/TimelineMappingTest.cpp
 )
 target_link_libraries(aligna_tests PRIVATE aligna_core Catch2::Catch2WithMain)
 list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)

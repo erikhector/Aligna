@@ -17,11 +17,17 @@ AppController::~AppController()
 {
     deviceManager.removeAudioCallback(&chain);
     hist.onChange = nullptr;
+    onProjectChanged = nullptr;
 }
 
 void AppController::syncProjectRate() { chain.setProjectRate(hist.current().sampleRate, deviceManager); }
 
-void AppController::rebuildSnapshot() { playback.setSnapshot(makeSnapshot(hist.current(), sources)); }
+void AppController::rebuildSnapshot()
+{
+    playback.setSnapshot(makeSnapshot(hist.current(), sources));
+    if (onProjectChanged)
+        onProjectChanged();
+}
 
 void AppController::importFiles(const juce::Array<juce::File>& files, juce::String& errors)
 {

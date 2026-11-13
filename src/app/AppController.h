@@ -24,6 +24,9 @@ public:
     bool saveProject(const juce::File& file, juce::String& error);
     juce::File currentFile() const { return file; }
 
+    // Fired (message thread) after every project change, once the playback snapshot has been rebuilt.
+    std::function<void()> onProjectChanged;
+
 private:
     void rebuildSnapshot();
     void syncProjectRate();
