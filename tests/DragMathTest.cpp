@@ -59,3 +59,32 @@ TEST_CASE("limitNudge and snapEdge")
     REQUIRE(snapEdge(23000, true, 24000.0) == 24000);
     REQUIRE(snapEdge(23000, false, 24000.0) == 23000);
 }
+
+#include "edit/ClipOps.h"
+
+TEST_CASE("sameClips detects a trim that clamps back to the original")
+{
+    Project p;
+    SourceInfo src; src.id = "s"; src.length = 100000; src.numChannels = 1;
+    p.sources.push_back(src);
+    Track t; t.id = "t";
+    Clip c; c.id = "c"; c.sourceId = "s"; c.start = 1000; c.sourceOffset = 0; c.length = 50000;
+    t.clips.push_back(c);
+    p.tracks.push_back(t);
+
+    Project q = p;
+    REQUIRE(trimClipStart(q, "c", 0)); // snapped to 0, clamped back to 1000 (sourceOffset 0)
+    REQUIRE(sameClips(p, q));
+
+    q = p;
+    REQUIRE(trimClipEnd(q, "c", 1000 + 200000)); // beyond source end: clamped to max length 100000
+    REQUIRE_FALSE(sameClips(p, q));
+    REQUIRE(trimClipEnd(q, "c", 1000 + 300000));
+    Project r = q;
+    REQUIRE(trimClipEnd(r, "c", 1000 + 400000)); // already at max: no change
+    REQUIRE(sameClips(q, r));
+
+    q = p;
+    setClipFades(q, "c", 10, 0);
+    REQUIRE_FALSE(sameClips(p, q));
+}

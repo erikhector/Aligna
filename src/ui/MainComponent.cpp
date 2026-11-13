@@ -174,7 +174,8 @@ bool MainComponent::keyPressed(const juce::KeyPress& k)
     }
     const auto mods = k.getModifiers();
     const bool cmd = mods.isCommandDown() || mods.isCtrlDown();
-    if (cmd && k.getKeyCode() == 'Z')
+    const auto code = juce::CharacterFunctions::toUpperCase((juce::juce_wchar) k.getKeyCode()); // may arrive lowercase
+    if (cmd && code == 'Z')
     {
         if (mods.isShiftDown())
             redo();
@@ -183,7 +184,7 @@ bool MainComponent::keyPressed(const juce::KeyPress& k)
         return true;
     }
 #if ! JUCE_MAC
-    if (cmd && k.getKeyCode() == 'Y')
+    if (cmd && code == 'Y')
     {
         redo();
         return true;

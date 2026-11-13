@@ -46,4 +46,26 @@ SamplePos limitNudge(const std::vector<SamplePos>& starts, SamplePos delta)
         return 0;
     return std::max(delta, -*std::min_element(starts.begin(), starts.end()));
 }
+
+bool sameClips(const Project& a, const Project& b)
+{
+    if (a.tracks.size() != b.tracks.size())
+        return false;
+    for (size_t t = 0; t < a.tracks.size(); ++t)
+    {
+        const auto& x = a.tracks[t].clips;
+        const auto& y = b.tracks[t].clips;
+        if (x.size() != y.size())
+            return false;
+        for (size_t i = 0; i < x.size(); ++i)
+        {
+            const auto &c = x[i], &d = y[i];
+            if (c.id != d.id || c.sourceId != d.sourceId || c.start != d.start || c.sourceOffset != d.sourceOffset
+                || c.length != d.length || c.fadeIn != d.fadeIn || c.fadeOut != d.fadeOut
+                || ! juce::approximatelyEqual(c.gainDb, d.gainDb))
+                return false;
+        }
+    }
+    return true;
+}
 } // namespace aligna

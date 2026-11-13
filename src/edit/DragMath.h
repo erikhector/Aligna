@@ -30,4 +30,7 @@ SamplePos limitNudge(const std::vector<SamplePos>& starts, SamplePos delta);
 
 // Snaps a trimmed edge position when enabled.
 SamplePos snapEdge(SamplePos pos, bool snapEnabled, double step);
+
+// True when both projects have identical tracks (by position) and identical clips (all fields, same order).
+bool sameClips(const Project& a, const Project& b);
 } // namespace aligna

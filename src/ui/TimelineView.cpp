@@ -704,7 +704,11 @@ void TimelineView::mouseUp(const juce::MouseEvent&)
         return;
     }
     if (d.changed())
-        app.history().perform(d.name, [d](Project& p) { return d.apply(p); });
+        app.history().perform(d.name, [d](Project& p) {
+            const Project before = p;
+            // Clamping can bring the result back to the original (e.g. trim snapped past source start): no edit then.
+            return d.apply(p) && ! sameClips(before, p);
+        });
     repaint();
 }
 
