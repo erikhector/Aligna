@@ -32,7 +32,12 @@ FetchContent_Declare(rubberband
   GIT_REPOSITORY https://github.com/breakfastquay/rubberband.git
   GIT_TAG v4.0.0
   GIT_SHALLOW ON)
-FetchContent_MakeAvailable(JUCE Catch2 rubberband)
+# LAME 3.100 (LGPL): MP3 encoder, only libmp3lame/*.c is built (see lame_enc below).
+FetchContent_Declare(lame
+  URL https://downloads.sourceforge.net/project/lame/lame/3.100/lame-3.100.tar.gz
+  URL_HASH SHA256=ddfe36cab873794038ae2c1210557ad34857a4b6bdc515785d1da9e175b1da1e
+  DOWNLOAD_EXTRACT_TIMESTAMP ON)
+FetchContent_MakeAvailable(JUCE Catch2 rubberband lame)
 
 # Compile definitions shared by every target so app and tests see the same JUCE config.
 set(ALIGNA_JUCE_DEFS
@@ -58,6 +63,7 @@ target_sources(aligna_core PRIVATE
   src/edit/EditHistory.cpp
   src/io/ProjectFile.cpp
   src/io/FileNaming.cpp
+  src/io/Mp3Encoder.cpp
   src/engine/Mixer.cpp
   src/engine/PlaybackChain.cpp
   src/engine/PlaybackEngine.cpp
@@ -78,6 +84,23 @@ if(MSVC)
 else()
   set_source_files_properties(${RB_SINGLE} PROPERTIES COMPILE_OPTIONS "-w")
 endif()
+# LAME encoder library (no mpglib, no frontend, no SIMD quantize helper), warnings silenced for this target only.
+file(GLOB LAME_SOURCES CONFIGURE_DEPENDS ${lame_SOURCE_DIR}/libmp3lame/*.c)
+add_library(lame_enc STATIC ${LAME_SOURCES})
+target_include_directories(lame_enc
+  PUBLIC ${lame_SOURCE_DIR}/include
+  PRIVATE ${lame_SOURCE_DIR}/libmp3lame ${lame_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/third_party/lame)
+target_compile_definitions(lame_enc PRIVATE HAVE_CONFIG_H STDC_HEADERS HAVE_STDINT_H HAVE_ERRNO_H
+  HAVE_FCNTL_H HAVE_LIMITS_H ieee754_float32_t=float)
+if(MSVC)
+  target_compile_definitions(lame_enc PRIVATE _CRT_SECURE_NO_WARNINGS)
+  target_compile_options(lame_enc PRIVATE /w)
+else()
+  target_compile_definitions(lame_enc PRIVATE TAKEHIRO_IEEE754_HACK)
+  target_compile_options(lame_enc PRIVATE -w)
+endif()
+set_target_properties(lame_enc PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
 target_include_directories(aligna_core PUBLIC src)
 target_include_directories(aligna_core PRIVATE ${rubberband_SOURCE_DIR})
 if(APPLE)
@@ -86,6 +109,7 @@ endif()
 target_compile_features(aligna_core PUBLIC cxx_std_20)
 target_compile_definitions(aligna_core PUBLIC ${ALIGNA_JUCE_DEFS})
 target_link_libraries(aligna_core
+  PRIVATE lame_enc
   PUBLIC
     juce::juce_core
     juce::juce_audio_basics
@@ -146,6 +170,7 @@ add_executable(aligna_tests
   tests/StretchOpsTest.cpp
   tests/StretchCacheTest.cpp
   tests/StretchMathTest.cpp
+  tests/Mp3EncoderTest.cpp
 )
 target_link_libraries(aligna_tests PRIVATE aligna_core Catch2::Catch2WithMain)
 list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)
