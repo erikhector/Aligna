@@ -40,6 +40,7 @@ add_library(aligna_core STATIC)
 target_sources(aligna_core PRIVATE
   src/core/Version.cpp
   src/edit/ClipOps.cpp
+  src/edit/DragMath.cpp
   src/edit/EditHistory.cpp
   src/io/ProjectFile.cpp
   src/engine/Mixer.cpp
@@ -103,6 +104,7 @@ add_executable(aligna_tests
   tests/PlaybackEngineTest.cpp
   tests/PlaybackChainTest.cpp
   tests/TimelineMappingTest.cpp
+  tests/DragMathTest.cpp
 )
 target_link_libraries(aligna_tests PRIVATE aligna_core Catch2::Catch2WithMain)
 list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)

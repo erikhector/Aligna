@@ -12,5 +12,7 @@ struct TimelineState
     std::set<juce::String> selectedClipIds;
     std::optional<juce::Range<SamplePos>> timeSelection; // [start, end) in samples
     juce::String alignReferenceClipId;
+    bool snapEnabled = true;
+    int subdivisionsPerBeat = 1; // 0 = snap to whole bars, otherwise subdivisions per beat (1 = 1/4 in 4/4)
 };
 } // namespace aligna

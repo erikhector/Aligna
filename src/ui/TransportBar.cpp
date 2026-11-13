@@ -15,10 +15,10 @@ juce::String formatPosition(SamplePos pos, const Project& p)
 }
 } // namespace
 
-TransportBar::TransportBar(AppController& a) : app(a)
+TransportBar::TransportBar(AppController& a, TimelineState& st) : app(a), tlState(st)
 {
     for (auto* c : std::initializer_list<juce::Component*> { &importButton, &playButton, &stopButton, &audioButton,
-                                                              &position, &bpmLabel, &bpmField })
+                                                              &position, &bpmLabel, &bpmField, &snapButton, &gridBox })
     {
         addAndMakeVisible(*c);
         c->setWantsKeyboardFocus(false);
@@ -30,6 +30,22 @@ TransportBar::TransportBar(AppController& a) : app(a)
     bpmField.setJustification(juce::Justification::centred);
     bpmField.onReturnKey = [this] { commitBpm(); };
     bpmField.onFocusLost = [this] { commitBpm(); };
+    snapButton.setClickingTogglesState(true);
+    snapButton.setColour(juce::TextButton::buttonOnColourId, juce::Colour(0xff2f7fd0));
+    snapButton.setToggleState(tlState.snapEnabled, juce::dontSendNotification);
+    snapButton.setTooltip("Snap to grid (G). Hold Alt while dragging to bypass.");
+    snapButton.onClick = [this] { tlState.snapEnabled = snapButton.getToggleState(); };
+    // Item ids: 1 = Bar (0 subdivisions), then 1/4, 1/8, 1/16 = 1, 2, 4 subdivisions per beat.
+    gridBox.addItem("Bar", 1);
+    gridBox.addItem("1/4", 2);
+    gridBox.addItem("1/8", 3);
+    gridBox.addItem("1/16", 4);
+    gridBox.setSelectedId(tlState.subdivisionsPerBeat == 0 ? 1 : tlState.subdivisionsPerBeat == 2 ? 3 : tlState.subdivisionsPerBeat == 4 ? 4 : 2,
+                          juce::dontSendNotification);
+    gridBox.onChange = [this] {
+        static const int subs[] = { 0, 1, 2, 4 };
+        tlState.subdivisionsPerBeat = subs[juce::jlimit(1, 4, gridBox.getSelectedId()) - 1];
+    };
     playButton.onClick = [this] { togglePlay(); };
     stopButton.onClick = [this] { app.engine().stop(); refresh(); };
     audioButton.onClick = [this] { showAudioSettings(); };
@@ -52,6 +68,7 @@ void TransportBar::refresh()
 {
     const auto& p = app.history().current();
     position.setText(formatPosition(app.engine().getPosition(), p), juce::dontSendNotification);
+    snapButton.setToggleState(tlState.snapEnabled, juce::dontSendNotification); // G key toggles it too
     playButton.setButtonText(app.engine().isPlaying() ? "Pause" : "Play");
     if (!bpmField.hasKeyboardFocus(false))
         bpmField.setText(juce::String(p.bpm, 2).trimCharactersAtEnd("0").trimCharactersAtEnd("."),
@@ -89,6 +106,10 @@ void TransportBar::resized()
     playButton.setBounds(r.removeFromLeft(70));
     r.removeFromLeft(4);
     stopButton.setBounds(r.removeFromLeft(70));
+    r.removeFromLeft(12);
+    snapButton.setBounds(r.removeFromLeft(60));
+    r.removeFromLeft(4);
+    gridBox.setBounds(r.removeFromLeft(80));
     r.removeFromLeft(12);
     audioButton.setBounds(r.removeFromRight(150));
     r.removeFromRight(12);

@@ -1,5 +1,6 @@
 #pragma once
 #include "app/AppController.h"
+#include "ui/TimelineState.h"
 #include <juce_gui_basics/juce_gui_basics.h>
 
 namespace aligna
@@ -7,7 +8,7 @@ namespace aligna
 class TransportBar : public juce::Component, private juce::Timer
 {
 public:
-    explicit TransportBar(AppController&);
+    TransportBar(AppController&, TimelineState&);
     ~TransportBar() override;
     void paint(juce::Graphics&) override;
     void resized() override;
@@ -22,6 +23,9 @@ private:
     void showAudioSettings();
 
     AppController& app;
+    TimelineState& tlState;
+    juce::TextButton snapButton { "Snap" };
+    juce::ComboBox gridBox;
     juce::TextButton playButton { "Play" }, stopButton { "Stop" }, audioButton { "Audio settings..." };
     juce::Label position, bpmLabel { {}, "BPM" };
     juce::TextEditor bpmField;

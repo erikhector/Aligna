@@ -45,7 +45,8 @@ Hit hitTest(const Project& proj, const TimelineMapping& m, int trackHeight, juce
     const float l = (float) m.toX(best->start), r = (float) m.toX(best->start + best->length);
     const float edge = std::min(6.0f, (r - l) / 3.0f);
 
-    if (ly < 10.0f)
+    // Fade handles only on clips wider than 36 px; narrower clips use trim/body so edges stay reachable.
+    if (ly < 10.0f && r - l > 36.0f)
     {
         const float dIn = std::abs(p.x - (float) m.toX(best->start + best->fadeIn));
         const float dOut = std::abs(p.x - (float) m.toX(best->start + best->length - best->fadeOut));

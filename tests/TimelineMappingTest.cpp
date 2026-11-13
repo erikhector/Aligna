@@ -124,3 +124,22 @@ TEST_CASE("a 3e9-sample clip at max zoom gives a sane on-screen rect")
     REQUIRE(r == 1216);
     REQUIRE(r - l == 1232);
 }
+
+TEST_CASE("hitTest fade handles are inactive for clips 36 px wide or narrower")
+{
+    Project p;
+    Track t;
+    Clip a; a.id = "a"; a.start = 0; a.length = 512 * 36; a.fadeIn = 512 * 10; // exactly 36 px wide
+    Clip b; b.id = "b"; b.start = 512 * 100; b.length = 512 * 37; b.fadeIn = 512 * 10; // 37 px wide
+    t.clips = { a, b };
+    p.tracks.push_back(t);
+    TimelineMapping m;
+    auto h = hitTest(p, m, 100, { 10.0f, 5.0f });
+    REQUIRE(h.clipId == "a");
+    REQUIRE(h.zone == HitZone::Body);
+    h = hitTest(p, m, 100, { 2.0f, 5.0f });
+    REQUIRE(h.zone == HitZone::TrimStart);
+    h = hitTest(p, m, 100, { 110.0f, 5.0f }); // 37 px wide: fade handle at x=110 is active
+    REQUIRE(h.clipId == "b");
+    REQUIRE(h.zone == HitZone::FadeIn);
+}
