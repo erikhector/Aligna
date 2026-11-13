@@ -1,5 +1,7 @@
 #include "io/ProjectFile.h"
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_floating_point.hpp>
+#include <catch2/matchers/catch_matchers.hpp>
 
 using namespace aligna;
 
@@ -51,8 +53,8 @@ TEST_CASE("project round trip", "[projectfile]")
     REQUIRE(saveProject(p, file, err));
     auto q = loadProject(file, err);
     REQUIRE(q.has_value());
-    CHECK(q->sampleRate == p.sampleRate);
-    CHECK(q->bpm == p.bpm);
+    CHECK_THAT(q->sampleRate, Catch::Matchers::WithinULP(p.sampleRate, 0));
+    CHECK_THAT(q->bpm, Catch::Matchers::WithinULP(p.bpm, 0));
     CHECK(q->beatsPerBar == 3);
     CHECK(q->beatUnit == 8);
     REQUIRE(q->sources.size() == 2);
@@ -69,7 +71,7 @@ TEST_CASE("project round trip", "[projectfile]")
     {
         auto &a = p.tracks[i], &b = q->tracks[i];
         CHECK(a.id == b.id); CHECK(a.name == b.name);
-        CHECK(a.volumeDb == b.volumeDb); CHECK(a.pan == b.pan);
+        CHECK_THAT(b.volumeDb, Catch::Matchers::WithinULP(a.volumeDb, 0)); CHECK_THAT(b.pan, Catch::Matchers::WithinULP(a.pan, 0));
         CHECK(a.mute == b.mute); CHECK(a.solo == b.solo);
         REQUIRE(a.clips.size() == b.clips.size());
         for (size_t k = 0; k < a.clips.size(); ++k)
@@ -77,7 +79,7 @@ TEST_CASE("project round trip", "[projectfile]")
             auto &x = a.clips[k], &y = b.clips[k];
             CHECK(x.id == y.id); CHECK(x.sourceId == y.sourceId);
             CHECK(x.start == y.start); CHECK(x.sourceOffset == y.sourceOffset);
-            CHECK(x.length == y.length); CHECK(x.gainDb == y.gainDb);
+            CHECK(x.length == y.length); CHECK_THAT(y.gainDb, Catch::Matchers::WithinULP(x.gainDb, 0));
             CHECK(x.fadeIn == y.fadeIn); CHECK(x.fadeOut == y.fadeOut);
         }
     }
@@ -242,16 +244,41 @@ TEST_CASE("load validation", "[projectfile]")
     }
 }
 
-TEST_CASE("failed save keeps previous file", "[projectfile]")
+TEST_CASE("failed save keeps previous target and leaves no temp files", "[projectfile]")
 {
     TempDir td;
-    auto file = td.dir.getChildFile("proj.aligna");
+    // Target is a non-empty directory: writing the temp file succeeds, replacing it must fail.
+    auto target = td.dir.getChildFile("proj.aligna");
+    target.createDirectory();
+    auto keep = target.getChildFile("keep.txt");
+    keep.replaceWithText("precious");
     Project p;
     juce::String err;
-    REQUIRE(saveProject(p, file, err));
-    auto before = file.loadFileAsString();
-    // Target in a nonexistent directory cannot be written.
+    CHECK_FALSE(saveProject(p, target, err));
+    CHECK(err.isNotEmpty());
+    CHECK(target.isDirectory());
+    CHECK(keep.loadFileAsString() == "precious");
+    auto entries = td.dir.findChildFiles(juce::File::findFilesAndDirectories, false);
+    CHECK(entries.size() == 1);
+
+    // Missing folder: fails with an error and creates nothing.
     CHECK_FALSE(saveProject(p, td.dir.getChildFile("no/such/dir/p.aligna"), err));
     CHECK(err.isNotEmpty());
-    CHECK(file.loadFileAsString() == before);
+    CHECK(td.dir.findChildFiles(juce::File::findFilesAndDirectories, false).size() == 1);
+}
+
+TEST_CASE("numChannels validated", "[projectfile]")
+{
+    TempDir td;
+    auto f = td.dir.getChildFile("p.aligna");
+    juce::String err;
+    for (auto bad : { "0", "3", "-1", "1.5", "1e300" })
+    {
+        writeText(f, baseJson().replace("\"numChannels\":1", juce::String("\"numChannels\":") + bad));
+        CHECK_FALSE(loadProject(f, err).has_value());
+        CHECK(err.contains("numChannels"));
+    }
+    writeText(f, baseJson().replace("\"format\":1", "\"format\":1e300"));
+    CHECK_FALSE(loadProject(f, err).has_value());
+    CHECK(err.contains("newer version"));
 }

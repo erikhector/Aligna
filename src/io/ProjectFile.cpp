@@ -201,10 +201,10 @@ std::optional<Project> loadProject(const juce::File& file, juce::String& error)
     if (r.failed()) return fail();
     if (format > kFormat)
     {
-        error = "This project was saved by a newer version of Aligna (format " + juce::String(static_cast<int>(format)) + ")";
+        error = "This project was saved by a newer version of Aligna (format " + juce::String(format) + ")";
         return std::nullopt;
     }
-    if (format != kFormat)
+    if (format < kFormat)
     {
         error = "Unsupported project format " + juce::String(format);
         return std::nullopt;
@@ -219,10 +219,11 @@ std::optional<Project> loadProject(const juce::File& file, juce::String& error)
 
     if (!(p.sampleRate > 0)) { error = "Invalid sampleRate: must be greater than 0"; return std::nullopt; }
     if (!(p.bpm >= 20 && p.bpm <= 400)) { error = "Invalid bpm: must be between 20 and 400"; return std::nullopt; }
-    if (!(bpb >= 1 && bpb <= 32 && bpb == std::floor(bpb))) { error = "Invalid beatsPerBar: must be a whole number from 1 to 32"; return std::nullopt; }
-    if (!(unit == 1 || unit == 2 || unit == 4 || unit == 8 || unit == 16)) { error = "Invalid beatUnit: must be 1, 2, 4, 8 or 16"; return std::nullopt; }
+    if (!(bpb >= 1 && bpb <= 32 && !(std::floor(bpb) < bpb))) { error = "Invalid beatsPerBar: must be a whole number from 1 to 32"; return std::nullopt; }
+    const int unitInt = (unit >= 1 && unit <= 16 && std::floor(unit) < unit + 0.5 && !(std::floor(unit) < unit)) ? static_cast<int>(unit) : 0;
+    if (!(unitInt == 1 || unitInt == 2 || unitInt == 4 || unitInt == 8 || unitInt == 16)) { error = "Invalid beatUnit: must be 1, 2, 4, 8 or 16"; return std::nullopt; }
     p.beatsPerBar = static_cast<int>(bpb);
-    p.beatUnit = static_cast<int>(unit);
+    p.beatUnit = unitInt;
 
     auto projectDir = file.getParentDirectory();
 
@@ -235,8 +236,14 @@ std::optional<Project> loadProject(const juce::File& file, juce::String& error)
         s.id = r.str(sv, "id", ctx);
         auto path = r.str(sv, "path", ctx);
         s.length = r.pos(sv, "length", ctx);
-        s.numChannels = static_cast<int>(r.num(sv, "numChannels", ctx));
+        auto nch = r.num(sv, "numChannels", ctx);
         if (r.failed()) return fail();
+        if (!(nch >= 1 && nch <= 2) || std::floor(nch) < nch)
+        {
+            error = "Invalid numChannels: must be 1 or 2" + ctx;
+            return std::nullopt;
+        }
+        s.numChannels = static_cast<int>(nch);
         juce::File f = juce::File::isAbsolutePath(path) ? juce::File(path) : projectDir.getChildFile(path);
         s.path = f.getFullPathName();
         s.missing = !f.existsAsFile();
