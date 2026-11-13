@@ -117,3 +117,35 @@ TEST_CASE("mp3 title tag", "[mp3]")
     REQUIRE((contains("Mix \xC3\xB6 1") || contains("Mix \xF6 1")));
     REQUIRE(openMp3(tmp.getFile()) != nullptr);
 }
+
+TEST_CASE("mp3 low-rate input upsampled to 44.1k does not overflow scratch", "[mp3]")
+{
+    juce::TemporaryFile tmp(".mp3");
+    juce::String err;
+    REQUIRE(encode(tmp.getFile(), 8000, 320, "t", makeTone(8000, 16000, 440.f, 0.5f), err));
+    auto r = openMp3(tmp.getFile());
+    REQUIRE(r != nullptr);
+    REQUIRE((int) r->sampleRate == 44100);
+    REQUIRE(std::abs((int) r->lengthInSamples - 88200) <= 2304);
+}
+
+TEST_CASE("mp3 title with non-BMP character uses surrogate pairs", "[mp3]")
+{
+    juce::TemporaryFile tmp(".mp3");
+    juce::String err;
+    const juce::String title = juce::String(juce::CharPointer_UTF8("\xE6\x97\xA5 ")) + juce::String::charToString((juce::juce_wchar) 0x1F3B5);
+    REQUIRE(encode(tmp.getFile(), 44100, 256, title, makeTone(44100, 44100, 440.f, 0.3f), err));
+
+    juce::MemoryBlock mb;
+    tmp.getFile().loadFileAsData(mb);
+    const auto* d = static_cast<const unsigned char*>(mb.getData());
+    REQUIRE(mb.getSize() > 512);
+    REQUIRE(d[0] == 'I'); REQUIRE(d[1] == 'D'); REQUIRE(d[2] == '3');
+
+    const std::string head((const char*) d, 512);
+    const auto tit2 = head.find("TIT2");
+    REQUIRE(tit2 != std::string::npos);
+    const std::string pair("\x3C\xD8\xB5\xDF", 4);
+    REQUIRE(head.find(pair, tit2) != std::string::npos);
+    REQUIRE(openMp3(tmp.getFile()) != nullptr);
+}

@@ -2,7 +2,7 @@
 
 Aligna is an open-source digital audio workstation (JUCE / C++20) focused on one job: **aligning audio tracks**.
 Import several recordings of the same performance, line them up on a timeline (by hand, with snapping and nudging,
-or automatically by cross-correlation), listen, and export a mixed WAV. Source audio files are never modified.
+or automatically by cross-correlation), listen, and export the mix as WAV or MP3. Source audio files are never modified.
 
 ## Features
 
@@ -12,7 +12,7 @@ or automatically by cross-correlation), listen, and export a mixed WAV. Source a
 - Auto-align: pick a reference clip and shift other clips to match it by cross-correlation (shifts only, never stretches; reports inverted polarity). You confirm before anything moves.
 - Undo/redo for every edit.
 - Projects are saved as `.aligna` JSON files (audio paths relative to the project when possible). If audio files have moved, the project still opens, the missing clips are shown in red and the rest plays.
-- Export the mix as a stereo WAV (16- or 24-bit) or MP3 (192–320 kbps).
+- Export the mix as a stereo WAV (16- or 24-bit) or MP3 (192/256/320 kbps CBR; MP3 at the project rate (32/44.1/48 kHz), otherwise 44.1 kHz).
 
 ## Keyboard shortcuts
 
@@ -100,4 +100,6 @@ AGPL-3.0, see [LICENSE](LICENSE) (JUCE 8 open-source terms).
 
 Time-stretching uses [Rubber Band Library](https://breakfastquay.com/rubberband/) (v4.0.0, R2 engine, GPL-2.0-or-later, copyright Particular Programs Ltd), built into Aligna from its single-file source; Aligna is distributed under terms compatible with it.
 
-MP3 encoding uses [LAME](https://lame.sourceforge.io/) 3.100 (LGPL-2.0-or-later) — MP3 encoding, built into Aligna.
+MP3 encoding uses [LAME](https://lame.sourceforge.io/) 3.100 (LGPL-2.0-or-later, © the LAME project), built into Aligna from source.
+
+Release downloads include `LICENSE`, `LICENSE-LAME.txt`, `LICENSE-RubberBand.txt` and `THIRD-PARTY-NOTICES.txt`.

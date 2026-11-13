@@ -78,7 +78,9 @@ bool Mp3Encoder::open(const juce::File& file, double inRate, int kbps, const juc
         {
             // Not representable in Latin-1: store as UTF-16 with BOM.
             std::vector<unsigned short> u16 { 0xFEFF };
-            for (auto p = t.toUTF16(); *p != 0; ++p) u16.push_back((unsigned short) *p);
+            // Copy raw UTF-16 code units so non-BMP characters stay surrogate pairs.
+            const auto u = t.toUTF16();
+            for (auto* p = reinterpret_cast<const uint16_t*>(u.getAddress()); *p != 0; ++p) u16.push_back((unsigned short) *p);
             u16.push_back(0);
             id3tag_set_textinfo_utf16(g, "TIT2", u16.data());
         }
@@ -128,7 +130,11 @@ bool Mp3Encoder::write(const juce::AudioBuffer<float>& stereo, int numSamples, j
         return false;
     }
 
-    impl->scratch.resize((size_t) (1.25 * numSamples + 7200));
+    // LAME may resample internally, so size the buffer from the OUTPUT sample count.
+    const double outRate = (double) lame_get_out_samplerate(impl->gfp);
+    const double inRate = (double) lame_get_in_samplerate(impl->gfp);
+    const double nOut = std::ceil((double) numSamples * outRate / inRate);
+    impl->scratch.resize((size_t) (1.25 * nOut + 7200));
     const int n = lame_encode_buffer_ieee_float(impl->gfp, stereo.getReadPointer(0), stereo.getReadPointer(1),
                                                 numSamples, impl->scratch.data(), (int) impl->scratch.size());
     if (n < 0)

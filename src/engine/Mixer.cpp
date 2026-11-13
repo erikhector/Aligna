@@ -186,6 +186,7 @@ bool exportMix(const MixSnapshot& snap, const juce::File& out, const ExportSetti
         {
             encoderPtr.reset();
             tmp.deleteFile();
+            error = "Could not write " + out.getFullPathName();
             return false;
         }
     }

@@ -101,6 +101,10 @@ else()
 endif()
 set_target_properties(lame_enc PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
+# License texts for release packaging: copied next to the app so CI needn't know _deps paths.
+configure_file(${lame_SOURCE_DIR}/COPYING ${CMAKE_BINARY_DIR}/LICENSE-LAME.txt COPYONLY)
+configure_file(${rubberband_SOURCE_DIR}/COPYING ${CMAKE_BINARY_DIR}/LICENSE-RubberBand.txt COPYONLY)
+
 target_include_directories(aligna_core PUBLIC src)
 target_include_directories(aligna_core PRIVATE ${rubberband_SOURCE_DIR})
 if(APPLE)

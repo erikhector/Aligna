@@ -72,6 +72,7 @@ private:
     std::vector<std::unique_ptr<TrackHeader>> headers;
     std::unique_ptr<juce::FileChooser> chooser;
     std::unique_ptr<juce::ThreadWithProgressWindow> exportTask;
+    ExportSettings lastExport; // format + bitrate chosen last in this session, preselected next time
     bool promptActive = false;
     std::unique_ptr<juce::DialogWindow> alignWindow; // at most one, non-modal
     std::unique_ptr<juce::MenuBarComponent> menuBar; // not used on macOS (native menu bar)

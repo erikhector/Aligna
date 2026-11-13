@@ -381,9 +381,16 @@ void MainComponent::doExport()
     }
     auto* w = new juce::AlertWindow("Export mix", "Format of the exported file:", juce::MessageBoxIconType::NoIcon, this);
     w->addComboBox("format", { "WAV 16-bit", "WAV 24-bit", "MP3" });
-    w->getComboBoxComponent("format")->setSelectedItemIndex(1);
+    auto* formatBox = w->getComboBoxComponent("format");
+    formatBox->setSelectedItemIndex(lastExport.format == ExportSettings::Format::Wav16   ? 0
+                                    : lastExport.format == ExportSettings::Format::Wav24 ? 1
+                                                                                          : 2);
     w->addComboBox("bitrate", { "192 kbps", "256 kbps", "320 kbps" }, "MP3 bitrate:");
-    w->getComboBoxComponent("bitrate")->setSelectedItemIndex(2);
+    auto* bitrateBox = w->getComboBoxComponent("bitrate");
+    bitrateBox->setSelectedItemIndex(lastExport.kbps == 192 ? 0 : lastExport.kbps == 256 ? 1 : 2);
+    // The bitrate only applies to MP3.
+    formatBox->onChange = [formatBox, bitrateBox] { bitrateBox->setEnabled(formatBox->getSelectedItemIndex() == 2); };
+    formatBox->onChange();
     w->addButton("Export...", 1, juce::KeyPress(juce::KeyPress::returnKey));
     w->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
     juce::Component::SafePointer<MainComponent> safe(this);
@@ -399,6 +406,8 @@ void MainComponent::doExport()
                                                        : ExportSettings::Format::Mp3;
                            const int bi = w->getComboBoxComponent("bitrate")->getSelectedItemIndex();
                            settings.kbps = bi == 0 ? 192 : bi == 1 ? 256 : 320;
+                           self.lastExport.format = settings.format;
+                           self.lastExport.kbps = settings.kbps;
                            const auto ext = extensionFor(settings.format);
                            const auto projectFile = self.app.currentFile();
                            settings.title = projectFile != juce::File() ? projectFile.getFileNameWithoutExtension() : juce::String("Untitled");
