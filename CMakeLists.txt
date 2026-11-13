@@ -39,6 +39,7 @@ set(ALIGNA_JUCE_DEFS
 add_library(aligna_core STATIC)
 target_sources(aligna_core PRIVATE
   src/core/Version.cpp
+  src/edit/ClipOps.cpp
 )
 target_include_directories(aligna_core PUBLIC src)
 target_compile_features(aligna_core PUBLIC cxx_std_20)
@@ -80,6 +81,7 @@ target_link_libraries(Aligna
 enable_testing()
 add_executable(aligna_tests
   tests/SmokeTest.cpp
+  tests/ClipOpsTest.cpp
 )
 target_link_libraries(aligna_tests PRIVATE aligna_core Catch2::Catch2WithMain)
 list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)
