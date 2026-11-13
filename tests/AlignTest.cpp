@@ -204,3 +204,25 @@ TEST_CASE("computeAlignment errors")
     CHECK_FALSE(computeAlignment(far, "ref", "tgt", std::nullopt, 30.0, noProgress, err).has_value());
     CHECK(err == juce::String::fromUTF8("Clips are too far apart \xe2\x80\x94 increase the search range"));
 }
+
+TEST_CASE("computeAlignment: a stretched clip without its buffer is still stretching")
+{
+    const auto stretching = juce::String::fromUTF8("Clip is still stretching \xe2\x80\x94 try again in a moment");
+    for (int which = 0; which < 2; ++which)
+    {
+        CAPTURE(which);
+        auto s = twoClipSnapshot(48000);
+        auto& c = s.project.tracks[(size_t) which].clips[0];
+        c.stretch = 1.5; // its buffer "src@1.5" is not in the snapshot
+        juce::String err;
+        CHECK_FALSE(computeAlignment(s, "ref", "tgt", std::nullopt, 30.0, noProgress, err).has_value());
+        CHECK(err == stretching);
+
+        // Once the buffer is there, alignment runs (the content is the plain source here, so it still lines up).
+        s.audio[bufferKey(c)] = s.audio["src"];
+        err.clear();
+        auto res = computeAlignment(s, "ref", "tgt", std::nullopt, 30.0, noProgress, err);
+        REQUIRE(res.has_value());
+        CHECK(res->newStart == 48000);
+    }
+}

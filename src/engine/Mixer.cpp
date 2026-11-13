@@ -3,19 +3,27 @@
 
 namespace aligna
 {
-std::shared_ptr<const MixSnapshot> makeSnapshot(const Project& p, const SourcePool& pool)
+std::shared_ptr<const MixSnapshot> makeSnapshot(const Project& p, const SourcePool& pool, const StretchCache& cache)
 {
     auto snap = std::make_shared<MixSnapshot>();
     snap->project = p;
-    for (auto& t : snap->project.tracks)
+    snap->clipAudio.resize(snap->project.tracks.size());
+    for (size_t ti = 0; ti < snap->project.tracks.size(); ++ti)
+    {
+        auto& t = snap->project.tracks[ti];
         std::stable_sort(t.clips.begin(), t.clips.end(),
                          [](const Clip& a, const Clip& b) { return a.start < b.start; });
-    for (auto& s : snap->project.sources)
-    {
-        if (s.missing)
-            continue;
-        if (auto d = pool.get(s.id))
-            snap->audio[s.id] = d;
+        for (auto& c : t.clips)
+        {
+            AudioData d;
+            const auto* s = findSource(snap->project, c.sourceId);
+            const auto key = bufferKey(c);
+            if (s != nullptr && ! s->missing)
+                d = nearlyEqual(c.stretch, 1.0) ? pool.get(c.sourceId) : cache.get(key);
+            if (d != nullptr)
+                snap->audio[key] = d;
+            snap->clipAudio[ti].push_back(d.get()); // owned by snap->audio
+        }
     }
     return snap;
 }
@@ -26,18 +34,30 @@ struct TrackCtx
 {
     const MixSnapshot* snap;
     const Track* track;
+    const std::vector<const juce::AudioBuffer<float>*>* buffers; // resolved per clip, or nullptr
     float trackGain, pan;
     SamplePos blockStart;
     juce::AudioBuffer<float>* out;
     int offset;
 };
 
-void renderClipRange(const TrackCtx& c, const Clip& clip, SamplePos a, SamplePos b)
+// Allocation-free: never builds a key string on the audio thread.
+const juce::AudioBuffer<float>* clipBuffer(const TrackCtx& c, const Clip& clip, int idx)
 {
+    if (c.buffers != nullptr)
+        return (*c.buffers)[static_cast<size_t>(idx)];
+    if (! nearlyEqual(clip.stretch, 1.0))
+        return nullptr;
     auto it = c.snap->audio.find(clip.sourceId);
-    if (it == c.snap->audio.end() || it->second == nullptr)
+    return it == c.snap->audio.end() ? nullptr : it->second.get();
+}
+
+void renderClipRange(const TrackCtx& c, const Clip& clip, int idx, SamplePos a, SamplePos b)
+{
+    const auto* buf = clipBuffer(c, clip, idx);
+    if (buf == nullptr)
         return;
-    const auto& src = *it->second;
+    const auto& src = *buf;
     const int srcCh = src.getNumChannels();
     if (srcCh < 1)
         return;
@@ -105,7 +125,7 @@ void renderRange(const TrackCtx& c, int idx, SamplePos lo, SamplePos hi)
         const SamplePos b = juce::jmin(hi, clip.start + clip.length);
         if (a >= b)
             continue;
-        renderClipRange(c, clip, a, b);
+        renderClipRange(c, clip, idx, a, b);
         if (a > lo)
             renderRange(c, idx - 1, lo, a);
         lo = b; // right remainder handled by the loop
@@ -124,11 +144,14 @@ void renderMix(const MixSnapshot& snap, SamplePos start, juce::AudioBuffer<float
     for (auto& t : snap.project.tracks)
         anySolo = anySolo || t.solo;
 
-    for (auto& t : snap.project.tracks)
+    const bool resolved = snap.clipAudio.size() == snap.project.tracks.size();
+    for (size_t ti = 0; ti < snap.project.tracks.size(); ++ti)
     {
+        const auto& t = snap.project.tracks[ti];
         if (t.mute || (anySolo && !t.solo))
             continue;
-        TrackCtx c{ &snap, &t, juce::Decibels::decibelsToGain(t.volumeDb), juce::jlimit(-1.0f, 1.0f, t.pan),
+        const auto* buffers = resolved && snap.clipAudio[ti].size() == t.clips.size() ? &snap.clipAudio[ti] : nullptr;
+        TrackCtx c{ &snap, &t, buffers, juce::Decibels::decibelsToGain(t.volumeDb), juce::jlimit(-1.0f, 1.0f, t.pan),
                     start, &out, offset };
         renderRange(c, static_cast<int>(t.clips.size()) - 1, start, start + numSamples);
     }

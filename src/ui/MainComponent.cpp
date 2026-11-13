@@ -456,7 +456,7 @@ private:
 void MainComponent::startExport(int bitDepth, const juce::File& f)
 {
     // Snapshot on the message thread; the worker only reads it.
-    auto snap = makeSnapshot(app.history().current(), app.pool());
+    auto snap = makeSnapshot(app.history().current(), app.pool(), app.stretchCache());
     juce::Component::SafePointer<MainComponent> safe(this);
     exportTask = std::make_unique<ExportTask>(
         std::move(snap), f, bitDepth,

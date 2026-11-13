@@ -7,24 +7,32 @@ namespace aligna
 {
 AppController::AppController()
 {
-    hist.onChange = [this] { rebuildSnapshot(); };
+    hist.onChange = [this] { projectChanged(); };
+    stretched.onReady = [this] { rebuildSnapshot(); };
     deviceManager.initialise(0, 2, nullptr, true); // may fail headless; playback is then silent
     deviceManager.addAudioCallback(&chain);
-    rebuildSnapshot();
+    projectChanged();
 }
 
 AppController::~AppController()
 {
     deviceManager.removeAudioCallback(&chain);
     hist.onChange = nullptr;
+    stretched.onReady = nullptr;
     onProjectChanged = nullptr;
 }
 
 void AppController::syncProjectRate() { chain.setProjectRate(hist.current().sampleRate, deviceManager); }
 
+void AppController::projectChanged()
+{
+    stretched.require(hist.current(), sources);
+    rebuildSnapshot();
+}
+
 void AppController::rebuildSnapshot()
 {
-    playback.setSnapshot(makeSnapshot(hist.current(), sources));
+    playback.setSnapshot(makeSnapshot(hist.current(), sources, stretched));
     if (onProjectChanged)
         onProjectChanged();
 }
@@ -61,7 +69,7 @@ void AppController::newProject(double sampleRate)
     p.sampleRate = sampleRate;
     hist.reset(std::move(p));
     syncProjectRate();
-    rebuildSnapshot();
+    projectChanged();
 }
 
 bool AppController::openProject(const juce::File& f, juce::String& error)
@@ -77,7 +85,7 @@ bool AppController::openProject(const juce::File& f, juce::String& error)
     hist.reset(std::move(*p));
     file = f;
     syncProjectRate();
-    rebuildSnapshot();
+    projectChanged();
     return true;
 }
 

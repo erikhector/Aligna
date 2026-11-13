@@ -1,5 +1,7 @@
 #include "engine/Mixer.h"
+#include "engine/StretchCache.h"
 #include <catch2/catch_test_macros.hpp>
+#include <juce_events/juce_events.h>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 using namespace aligna;
@@ -240,9 +242,99 @@ TEST_CASE("makeSnapshot sorts clips stably and collects audio")
     t.clips = { c1, c2, c3 };
     p.tracks.push_back(t);
     SourcePool pool;
-    auto s = makeSnapshot(p, pool);
+    StretchCache cache;
+    auto s = makeSnapshot(p, pool, cache);
     CHECK(s->project.tracks[0].clips[0].id == c2.id);
     CHECK(s->project.tracks[0].clips[1].id == c3.id);
     CHECK(s->project.tracks[0].clips[2].id == c1.id);
     CHECK(s->audio.empty());
+}
+
+namespace
+{
+// Imports a 1 s mono 48 kHz ramp-modulated sine and returns its SourceInfo.
+SourceInfo importTestSource(SourcePool& pool, const juce::File& dir)
+{
+    juce::AudioBuffer<float> b(1, 48000);
+    for (int i = 0; i < 48000; ++i)
+        b.setSample(0, i, 0.5f * (float) std::sin(2.0 * juce::MathConstants<double>::pi * 330.0 * i / 48000.0));
+    const auto f = dir.getChildFile("src.wav");
+    {
+        juce::WavAudioFormat wav;
+        std::unique_ptr<juce::OutputStream> os(f.createOutputStream());
+        REQUIRE(os != nullptr);
+        std::unique_ptr<juce::AudioFormatWriter> w(wav.createWriterFor(os.get(), 48000, 1, 32, {}, 0));
+        REQUIRE(w != nullptr);
+        os.release();
+        REQUIRE(w->writeFromAudioSampleBuffer(b, 0, 48000));
+    }
+    juce::String err;
+    auto info = pool.import(f, 48000, err);
+    REQUIRE(info.has_value());
+    return *info;
+}
+
+struct StretchFixture
+{
+    juce::ScopedJuceInitialiser_GUI gui;
+    juce::File dir = juce::File::getSpecialLocation(juce::File::tempDirectory)
+                         .getChildFile("aligna_mx_" + juce::Uuid().toString());
+    SourcePool pool;
+    Project p;
+    Clip stretched, plain;
+    StretchFixture()
+    {
+        dir.createDirectory();
+        auto info = importTestSource(pool, dir);
+        p.sources.push_back(info);
+        stretched = mkClip(info.id, 0, 2 * info.length);
+        stretched.stretch = 2.0;
+        plain = mkClip(info.id, 0, info.length);
+        Track t1, t2;
+        t1.clips.push_back(stretched);
+        t2.clips.push_back(plain);
+        p.tracks = { t1, t2 };
+    }
+    ~StretchFixture() { dir.deleteRecursively(); }
+};
+} // namespace
+
+TEST_CASE("makeSnapshot: a stretched clip plays the cache buffer")
+{
+    StretchFixture f;
+    f.p.tracks[1].mute = true;
+    StretchCache cache;
+    cache.require(f.p, f.pool);
+    cache.waitForIdle();
+    auto buf = cache.get(bufferKey(f.stretched));
+    REQUIRE(buf != nullptr);
+
+    auto s = makeSnapshot(f.p, f.pool, cache);
+    CHECK(s->audio.count(bufferKey(f.stretched)) == 1);
+    auto b = render(*s, 0, 96000);
+    for (int i : { 100, 20000, 60000, 95999 })
+    {
+        CAPTURE(i);
+        CHECK_THAT(b.getSample(0, i), WithinAbs(buf->getSample(0, i) * k, 1e-6));
+    }
+}
+
+TEST_CASE("makeSnapshot: a stretched clip whose buffer is not ready is silent")
+{
+    StretchFixture f;
+    StretchCache cache; // nothing required: buffer not ready
+    auto s = makeSnapshot(f.p, f.pool, cache);
+    CHECK(s->audio.count(bufferKey(f.stretched)) == 0);
+
+    f.p.tracks[1].mute = true;
+    auto silent = makeSnapshot(f.p, f.pool, cache);
+    auto b = render(*silent, 0, 96000);
+    CHECK_THAT(b.getMagnitude(0, 96000), WithinAbs(0, 1e-9));
+
+    // The unstretched clip of the same source still plays.
+    f.p.tracks[1].mute = false;
+    f.p.tracks[0].mute = true;
+    auto plain = makeSnapshot(f.p, f.pool, cache);
+    auto pb = render(*plain, 0, 48000);
+    CHECK(pb.getMagnitude(0, 48000) > 0.1f);
 }

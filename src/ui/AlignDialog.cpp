@@ -235,7 +235,7 @@ void AlignDialog::startAlign()
     phase = Phase::Running;
     statusLabel.setText("Aligning...", juce::dontSendNotification);
     updateButtons();
-    auto snap = makeSnapshot(proj, app.pool());
+    auto snap = makeSnapshot(proj, app.pool(), app.stretchCache());
     worker = std::make_unique<Worker>(*this, ++runToken, snap, referenceId, std::move(todo), selection,
                                       rangeSlider.getValue());
     worker->startThread();

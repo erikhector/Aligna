@@ -62,6 +62,7 @@ target_sources(aligna_core PRIVATE
   src/engine/PlaybackEngine.cpp
   src/engine/SourcePool.cpp
   src/engine/Stretcher.cpp
+  src/engine/StretchCache.cpp
   src/model/Grid.cpp
   src/align/Correlate.cpp
   src/align/AlignClips.cpp
@@ -141,6 +142,7 @@ add_executable(aligna_tests
   tests/FileNamingTest.cpp
   tests/StretcherTest.cpp
   tests/StretchOpsTest.cpp
+  tests/StretchCacheTest.cpp
 )
 target_link_libraries(aligna_tests PRIVATE aligna_core Catch2::Catch2WithMain)
 list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)
