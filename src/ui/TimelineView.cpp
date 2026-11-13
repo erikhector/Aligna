@@ -105,7 +105,7 @@ void TimelineView::resized() { clampView(); }
 void TimelineView::repaintColumn(double x)
 {
     if (x >= -2 && x <= getWidth() + 2)
-        repaint((int) std::floor(x) - 2, 0, 5, getHeight());
+        repaint(toPixelClamped(x, getWidth()) - 2, 0, 5, getHeight());
 }
 
 void TimelineView::timerCallback()
@@ -157,8 +157,8 @@ void TimelineView::paint(juce::Graphics& g)
             g.setColour(juce::Colours::white.withAlpha(0.12f));
             g.fillRect(x1, (float) rulerHeight, x2 - x1, (float) (getHeight() - rulerHeight));
             g.setColour(juce::Colours::white.withAlpha(0.45f));
-            g.drawVerticalLine((int) x1, (float) rulerHeight, (float) getHeight());
-            g.drawVerticalLine((int) x2, (float) rulerHeight, (float) getHeight());
+            g.drawVerticalLine(toPixelClamped(x1, getWidth()), (float) rulerHeight, (float) getHeight());
+            g.drawVerticalLine(toPixelClamped(x2, getWidth()), (float) rulerHeight, (float) getHeight());
         }
     }
 
@@ -174,7 +174,7 @@ void TimelineView::paint(juce::Graphics& g)
     if (px >= -1 && px <= getWidth() + 1)
     {
         g.setColour(juce::Colour(0xffff5050));
-        g.drawVerticalLine((int) std::floor(px), 0.0f, (float) getHeight());
+        g.drawVerticalLine(toPixelClamped(px, getWidth()), 0.0f, (float) getHeight());
         juce::Path tri;
         tri.addTriangle((float) px - 5.0f, 0.0f, (float) px + 6.0f, 0.0f, (float) px + 0.5f, 8.0f);
         g.fillPath(tri);
@@ -215,14 +215,14 @@ void TimelineView::paintRuler(juce::Graphics& g, juce::Rectangle<int> clip)
             if (bar % barStride != 0)
                 continue;
             g.setColour(juce::Colours::white.withAlpha(0.7f));
-            g.drawVerticalLine((int) std::round(x), 0.0f, (float) rulerHeight / 2.0f);
-            g.drawText(juce::String(bar + 1), (int) std::round(x) + 3, 0, 50, rulerHeight / 2,
+            g.drawVerticalLine(toPixelClamped(x, getWidth()), 0.0f, (float) rulerHeight / 2.0f);
+            g.drawText(juce::String(bar + 1), toPixelClamped(x, getWidth()) + 3, 0, 50, rulerHeight / 2,
                        juce::Justification::centredLeft, false);
         }
         else if (pxPerBeat >= 8.0 && barStride == 1)
         {
             g.setColour(juce::Colours::white.withAlpha(0.35f));
-            g.drawVerticalLine((int) std::round(x), (float) rulerHeight / 4.0f, (float) rulerHeight / 2.0f);
+            g.drawVerticalLine(toPixelClamped(x, getWidth()), (float) rulerHeight / 4.0f, (float) rulerHeight / 2.0f);
         }
     }
 
@@ -244,9 +244,9 @@ void TimelineView::paintRuler(juce::Graphics& g, juce::Rectangle<int> clip)
         const double t = (double) k * step;
         const double x = map.toX((SamplePos) std::llround(t * proj.sampleRate));
         g.setColour(juce::Colours::white.withAlpha(0.5f));
-        g.drawVerticalLine((int) std::round(x), (float) rulerHeight / 2.0f + 8.0f, (float) rulerHeight);
+        g.drawVerticalLine(toPixelClamped(x, getWidth()), (float) rulerHeight / 2.0f + 8.0f, (float) rulerHeight);
         g.setColour(juce::Colours::white.withAlpha(0.6f));
-        g.drawText(secondsLabel(t), (int) std::round(x) + 3, rulerHeight / 2, 70, rulerHeight / 2,
+        g.drawText(secondsLabel(t), toPixelClamped(x, getWidth()) + 3, rulerHeight / 2, 70, rulerHeight / 2,
                    juce::Justification::centredLeft, false);
     }
 
@@ -279,7 +279,7 @@ void TimelineView::paintTrack(juce::Graphics& g, const Track& track, int index, 
     for (size_t i = 0; i < order.size(); ++i)
     {
         const auto& c = *order[i];
-        const int l = (int) std::floor(map.toX(c.start)), r = (int) std::ceil(map.toX(c.start + c.length));
+        const int l = toPixelClamped(map.toX(c.start), getWidth()), r = toPixelClamped(map.toX(c.start + c.length), getWidth());
         if (r < clip.getX() || l > clip.getRight())
             continue;
         const juce::Rectangle<int> rect(l, top + 2, std::max(1, r - l), trackHeight - 4);
@@ -289,7 +289,7 @@ void TimelineView::paintTrack(juce::Graphics& g, const Track& track, int index, 
         for (size_t j = i + 1; j < order.size(); ++j)
         {
             const auto& o = *order[j];
-            const int ol = (int) std::floor(map.toX(o.start)), orr = (int) std::ceil(map.toX(o.start + o.length));
+            const int ol = toPixelClamped(map.toX(o.start), getWidth()), orr = toPixelClamped(map.toX(o.start + o.length), getWidth());
             covered.addWithoutMerging(rect.getIntersection({ ol, rect.getY(), std::max(0, orr - ol), rect.getHeight() }));
         }
         covered.consolidate();

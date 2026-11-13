@@ -105,3 +105,22 @@ TEST_CASE("hitTest fade handles and misses")
     h = hitTest(p, m, 100, { 20.0f, 250.0f });
     REQUIRE(h.trackIndex == -1);
 }
+
+TEST_CASE("toPixelClamped clamps far-off-screen coordinates")
+{
+    REQUIRE(toPixelClamped(1.0e15, 1000) == 1016);
+    REQUIRE(toPixelClamped(-1.0e15, 1000) == -16);
+    REQUIRE(toPixelClamped(std::nan(""), 1000) == 0);
+    REQUIRE(toPixelClamped(250.4, 1000) == 250);
+}
+
+TEST_CASE("a 3e9-sample clip at max zoom gives a sane on-screen rect")
+{
+    TimelineMapping m;
+    m.samplesPerPixel = TimelineMapping::minSamplesPerPixel;
+    m.viewStart = 1000;
+    const int l = toPixelClamped(m.toX(0), 1200), r = toPixelClamped(m.toX(3'000'000'000), 1200);
+    REQUIRE(l == -16);
+    REQUIRE(r == 1216);
+    REQUIRE(r - l == 1232);
+}

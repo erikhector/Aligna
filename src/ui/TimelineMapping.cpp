@@ -11,6 +11,13 @@ void TimelineMapping::zoomAround(double x, double factor)
     viewStart = std::max<SamplePos>(0, (SamplePos) std::llround(anchor - x * samplesPerPixel));
 }
 
+int toPixelClamped(double x, int width)
+{
+    if (std::isnan(x))
+        return 0;
+    return (int) std::lround(std::clamp(x, -16.0, (double) width + 16.0));
+}
+
 Hit hitTest(const Project& proj, const TimelineMapping& m, int trackHeight, juce::Point<float> p)
 {
     Hit hit;

@@ -18,6 +18,10 @@ struct TimelineMapping
     void zoomAround(double x, double factor);
 };
 
+// Rounds a pixel coordinate to int, clamped to [-16, width + 16] (in double, before converting) so far-off-screen
+// edges cannot overflow int. NaN maps to 0.
+int toPixelClamped(double x, int width);
+
 enum class HitZone { None, Body, TrimStart, TrimEnd, FadeIn, FadeOut };
 struct Hit
 {
