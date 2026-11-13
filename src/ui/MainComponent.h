@@ -1,6 +1,7 @@
 #pragma once
 
 #include "app/AppController.h"
+#include "ui/AlignDialog.h"
 #include "ui/TimelineState.h"
 #include "ui/TimelineView.h"
 #include "ui/TrackHeader.h"
@@ -30,7 +31,7 @@ public:
     TimelineState& timelineState() { return tlState; }
 
 private:
-    enum MenuIds { menuUndo = 1, menuRedo };
+    enum MenuIds { menuUndo = 1, menuRedo, menuAlign };
     static constexpr int menuBarHeight = 24;
     juce::PopupMenu editMenu();
     void importAndReport(const juce::Array<juce::File>&);
@@ -39,6 +40,10 @@ private:
     void chooseImport();
     void projectChanged();
     void layoutHeaders();
+    std::vector<juce::String> alignTargets() const; // selected clips other than the reference, project order
+    bool canAlign() const;
+    void openAlignDialog();
+    void closeAlignDialog();
 
     AppController& app;
     TimelineState tlState;
@@ -47,6 +52,7 @@ private:
     juce::Component headerColumn; // clips its children; headers scroll vertically with the lanes
     std::vector<std::unique_ptr<TrackHeader>> headers;
     std::unique_ptr<juce::FileChooser> chooser;
+    std::unique_ptr<juce::DialogWindow> alignWindow; // at most one, non-modal
     std::unique_ptr<juce::MenuBarComponent> menuBar; // not used on macOS (native menu bar)
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainComponent)
 };

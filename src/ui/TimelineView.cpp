@@ -342,7 +342,7 @@ void TimelineView::paintClip(juce::Graphics& g, const Clip& c, juce::Rectangle<i
     // Border (selection / align reference).
     const bool selected = state.selectedClipIds.count(c.id) > 0;
     const bool ref = c.id == state.alignReferenceClipId;
-    g.setColour(ref ? juce::Colour(0xffffd23f) : selected ? juce::Colours::white : colour.withAlpha(0.8f * alpha));
+    g.setColour(ref ? juce::Colour(0xffff9800) : selected ? juce::Colours::white : colour.withAlpha(0.8f * alpha));
     g.drawRect(r, (selected || ref) ? 2 : 1);
 
     if (!missing)
@@ -534,6 +534,28 @@ void TimelineView::mouseDown(const juce::MouseEvent& e)
     draggingRuler = false;
     selecting = false;
     cancelDrag();
+    if (! e.mods.isLeftButtonDown()) // only the left button starts drags / ruler actions
+    {
+        if (e.mods.isPopupMenu() && e.y >= rulerHeight)
+        {
+            const auto hit = aligna::hitTest(app.history().current(), map, trackHeight,
+                                             { (float) e.x, (float) (e.y - rulerHeight + viewY) });
+            if (hit.zone != HitZone::None)
+            {
+                juce::PopupMenu m;
+                m.addItem(1, "Set as align reference", true, state.alignReferenceClipId == hit.clipId);
+                m.showMenuAsync(juce::PopupMenu::Options(), [this, id = hit.clipId](int r) {
+                    if (r == 1)
+                    {
+                        state.alignReferenceClipId = id;
+                        repaint();
+                    }
+                    grabKeyboardFocus(); // shortcuts keep working after the popup closes
+                });
+            }
+        }
+        return;
+    }
     if (e.y < rulerHeight)
     {
         draggingRuler = true;

@@ -50,6 +50,7 @@ target_sources(aligna_core PRIVATE
   src/model/Grid.cpp
   src/align/Correlate.cpp
   src/align/AlignClips.cpp
+  src/align/AlignResults.cpp
   src/ui/TimelineMapping.cpp
 )
 target_include_directories(aligna_core PUBLIC src)
@@ -80,6 +81,7 @@ target_sources(Aligna PRIVATE
   src/ui/TransportBar.cpp
   src/ui/TrackHeader.cpp
   src/ui/TimelineView.cpp
+  src/ui/AlignDialog.cpp
   src/ui/MainComponent.cpp
 )
 target_compile_definitions(Aligna PRIVATE JUCE_STANDALONE_APPLICATION=1)
@@ -108,6 +110,7 @@ add_executable(aligna_tests
   tests/TimelineMappingTest.cpp
   tests/DragMathTest.cpp
   tests/AlignTest.cpp
+  tests/AlignResultsTest.cpp
 )
 target_link_libraries(aligna_tests PRIVATE aligna_core Catch2::Catch2WithMain)
 list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)

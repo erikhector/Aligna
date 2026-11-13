@@ -30,6 +30,7 @@ MainComponent::MainComponent(AppController& a) : app(a), transport(a, tlState), 
 
 MainComponent::~MainComponent()
 {
+    alignWindow.reset(); // stops the worker thread before anything else goes away
 #if JUCE_MAC
     juce::MenuBarModel::setMacMainMenu(nullptr);
 #endif
@@ -122,6 +123,75 @@ void MainComponent::filesDropped(const juce::StringArray& files, int, int)
         importAndReport(audio);
 }
 
+std::vector<juce::String> MainComponent::alignTargets() const
+{
+    std::vector<juce::String> ids;
+    for (auto& t : app.history().current().tracks)
+        for (auto& c : t.clips)
+            if (c.id != tlState.alignReferenceClipId && tlState.selectedClipIds.count(c.id) > 0)
+                ids.push_back(c.id);
+    return ids;
+}
+
+bool MainComponent::canAlign() const
+{
+    if (tlState.alignReferenceClipId.isEmpty())
+        return false;
+    bool refExists = false;
+    for (auto& t : app.history().current().tracks)
+        for (auto& c : t.clips)
+            refExists = refExists || c.id == tlState.alignReferenceClipId;
+    return refExists && ! alignTargets().empty();
+}
+
+namespace
+{
+class AlignWindow : public juce::DialogWindow
+{
+public:
+    explicit AlignWindow(std::function<void()> closeFn)
+        : juce::DialogWindow("Align to Reference", juce::Colour(0xff26282c), true), onClose(std::move(closeFn))
+    {
+    }
+    void closeButtonPressed() override { onClose(); }
+
+private:
+    std::function<void()> onClose;
+};
+} // namespace
+
+void MainComponent::openAlignDialog()
+{
+    if (alignWindow != nullptr)
+    {
+        alignWindow->toFront(true);
+        return;
+    }
+    if (! canAlign())
+        return;
+    juce::Component::SafePointer<MainComponent> safe(this);
+    auto close = [safe] {
+        // Deferred: the window must not be deleted from inside one of its own callbacks.
+        juce::MessageManager::callAsync([safe] {
+            if (safe != nullptr)
+                safe->closeAlignDialog();
+        });
+    };
+    auto win = std::make_unique<AlignWindow>(close);
+    win->setContentOwned(new AlignDialog(app, tlState.alignReferenceClipId, alignTargets(), tlState.timeSelection, close),
+                         true);
+    win->setUsingNativeTitleBar(true);
+    win->centreAroundComponent(this, win->getWidth(), win->getHeight());
+    win->setVisible(true);
+    alignWindow = std::move(win);
+}
+
+void MainComponent::closeAlignDialog()
+{
+    alignWindow.reset();
+    timeline.grabKeyboardFocus();
+}
+
 void MainComponent::undo() { app.history().undo(); }
 void MainComponent::redo() { app.history().redo(); }
 
@@ -146,6 +216,12 @@ juce::PopupMenu MainComponent::editMenu()
     r.isEnabled = h.canRedo();
     r.shortcutKeyDescription = juce::String(mod) + "Shift+Z";
     m.addItem(r);
+    m.addSeparator();
+    juce::PopupMenu::Item al("Align to Reference");
+    al.itemID = menuAlign;
+    al.isEnabled = canAlign();
+    al.shortcutKeyDescription = juce::String(mod) + "L";
+    m.addItem(al);
     return m;
 }
 
@@ -162,7 +238,10 @@ void MainComponent::menuItemSelected(int id, int)
         undo();
     else if (id == menuRedo)
         redo();
-    timeline.grabKeyboardFocus();
+    else if (id == menuAlign)
+        openAlignDialog();
+    if (alignWindow == nullptr)
+        timeline.grabKeyboardFocus();
 }
 
 bool MainComponent::keyPressed(const juce::KeyPress& k)
@@ -181,6 +260,12 @@ bool MainComponent::keyPressed(const juce::KeyPress& k)
             redo();
         else
             undo();
+        return true;
+    }
+    if (cmd && code == 'L')
+    {
+        if (canAlign())
+            openAlignDialog();
         return true;
     }
 #if ! JUCE_MAC
