@@ -42,6 +42,7 @@ target_sources(aligna_core PRIVATE
   src/edit/ClipOps.cpp
   src/edit/EditHistory.cpp
   src/io/ProjectFile.cpp
+  src/engine/Mixer.cpp
   src/engine/SourcePool.cpp
   src/model/Grid.cpp
 )
@@ -89,6 +90,7 @@ add_executable(aligna_tests
   tests/EditHistoryTest.cpp
   tests/GridTest.cpp
   tests/ProjectFileTest.cpp
+  tests/MixerTest.cpp
   tests/SourcePoolTest.cpp
 )
 target_link_libraries(aligna_tests PRIVATE aligna_core Catch2::Catch2WithMain)
