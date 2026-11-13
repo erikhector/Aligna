@@ -39,6 +39,7 @@ private:
     };
 
     void rebuildSnapshot();
+    void syncProjectRate();
 
     EditHistory hist { Project {} };
     SourcePool sources;
@@ -47,6 +48,7 @@ private:
     juce::AudioSourcePlayer player;
     juce::AudioDeviceManager deviceManager;
     DeviceCallback callback { *this };
+    std::atomic<double> projectRate { 48000.0 };
     juce::File file;
 };
 } // namespace aligna

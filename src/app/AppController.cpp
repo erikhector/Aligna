@@ -1,6 +1,7 @@
 #include "app/AppController.h"
 #include "edit/ClipOps.h"
 #include "io/ProjectFile.h"
+#include <cmath>
 
 namespace aligna
 {
@@ -8,7 +9,7 @@ void AppController::DeviceCallback::audioDeviceAboutToStart(juce::AudioIODevice*
 {
     const auto deviceRate = d != nullptr ? d->getCurrentSampleRate() : 0.0;
     if (deviceRate > 0.0)
-        owner.resampler.setResamplingRatio(owner.hist.current().sampleRate / deviceRate);
+        owner.resampler.setResamplingRatio(owner.projectRate.load() / deviceRate);
     owner.player.audioDeviceAboutToStart(d);
 }
 
@@ -35,6 +36,16 @@ AppController::~AppController()
     deviceManager.removeAudioCallback(&callback);
     player.setSource(nullptr);
     hist.onChange = nullptr;
+}
+
+void AppController::syncProjectRate()
+{
+    const auto r = hist.current().sampleRate;
+    if (std::abs(r - projectRate.load()) < 1e-9)
+        return;
+    projectRate.store(r);
+    // Re-runs audioDeviceAboutToStart: updates the resampling ratio and re-prepares the chain off the audio thread.
+    deviceManager.restartLastAudioDevice();
 }
 
 void AppController::rebuildSnapshot() { playback.setSnapshot(makeSnapshot(hist.current(), sources)); }
@@ -68,6 +79,7 @@ void AppController::newProject()
     sources.clear();
     file = juce::File();
     hist.reset(Project {});
+    syncProjectRate();
     rebuildSnapshot();
 }
 
@@ -83,6 +95,7 @@ bool AppController::openProject(const juce::File& f, juce::String& error)
         sources.load(s, p->sampleRate); // sets missing on failure
     hist.reset(std::move(*p));
     file = f;
+    syncProjectRate();
     rebuildSnapshot();
     return true;
 }

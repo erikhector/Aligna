@@ -1,5 +1,6 @@
 #include "engine/PlaybackEngine.h"
 #include <catch2/catch_test_macros.hpp>
+#include <thread>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 using namespace aligna;
@@ -132,4 +133,30 @@ TEST_CASE("PlaybackEngine frees retired snapshots", "[engine]")
     juce::Thread::sleep(600);
     e.setSnapshot(makeSnap(0.4f));
     REQUIRE(w.expired());
+}
+
+TEST_CASE("PlaybackEngine seek during audio block is not lost", "[engine]")
+{
+    PlaybackEngine e;
+    e.setSnapshot(makeSnap(0.5f, 1 << 20));
+    juce::AudioBuffer<float> buf(2, 8192);
+    std::atomic<bool> run { true };
+    std::thread audio([&] {
+        while (run.load())
+            pull(e, buf);
+    });
+    int lost = 0;
+    for (int i = 0; i < 300; ++i)
+    {
+        e.play();
+        juce::Thread::sleep(1);
+        e.pause();
+        e.setPosition(12345);
+        juce::Thread::sleep(2); // let any in-flight block finish
+        if (e.getPosition() != 12345)
+            ++lost;
+    }
+    run = false;
+    audio.join();
+    REQUIRE(lost == 0);
 }

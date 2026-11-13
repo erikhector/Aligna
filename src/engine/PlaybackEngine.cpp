@@ -39,12 +39,15 @@ void PlaybackEngine::setPosition(SamplePos p) { position.store(std::max<SamplePo
 void PlaybackEngine::getNextAudioBlock(const juce::AudioSourceChannelInfo& info)
 {
     info.clearActiveBufferRegion();
+    // Load the position before the playing flag: a message-thread pause() followed by setPosition()
+    // then either leaves playing false here, or makes the compare-exchange below fail.
+    auto pos = position.load();
     if (!playing.load())
         return;
     const auto* snap = current.load(std::memory_order_acquire);
-    const auto pos = position.load();
     if (snap != nullptr)
         renderMix(*snap, pos, *info.buffer, info.startSample, info.numSamples);
-    position.store(pos + info.numSamples);
+    // An external stop()/setPosition() during the render wins over the advance.
+    position.compare_exchange_strong(pos, pos + info.numSamples);
 }
 } // namespace aligna
