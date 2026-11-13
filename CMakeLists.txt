@@ -1,4 +1,12 @@
 cmake_minimum_required(VERSION 3.22)
+# Must be set before project() so every target (including FetchContent'd JUCE and Catch2) sees them.
+# Windows: static MSVC runtime so the release .exe does not need the VC++ redistributable (CMP0091 is NEW at 3.22).
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+# macOS: universal binary, deployment target 11.0 (the first release with arm64). Cache entries so -D can still override.
+if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin")
+  set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "macOS architectures")
+  set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version")
+endif()
 project(Aligna VERSION 0.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
