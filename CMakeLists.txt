@@ -54,6 +54,7 @@ target_sources(aligna_core PRIVATE
   src/core/Version.cpp
   src/edit/ClipOps.cpp
   src/edit/DragMath.cpp
+  src/edit/StretchMath.cpp
   src/edit/EditHistory.cpp
   src/io/ProjectFile.cpp
   src/io/FileNaming.cpp
@@ -110,6 +111,7 @@ target_sources(Aligna PRIVATE
   src/ui/TrackHeader.cpp
   src/ui/TimelineView.cpp
   src/ui/AlignDialog.cpp
+  src/ui/ClipTempoDialog.cpp
   src/ui/MainComponent.cpp
 )
 target_compile_definitions(Aligna PRIVATE JUCE_STANDALONE_APPLICATION=1)
@@ -143,6 +145,7 @@ add_executable(aligna_tests
   tests/StretcherTest.cpp
   tests/StretchOpsTest.cpp
   tests/StretchCacheTest.cpp
+  tests/StretchMathTest.cpp
 )
 target_link_libraries(aligna_tests PRIVATE aligna_core Catch2::Catch2WithMain)
 list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)

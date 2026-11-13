@@ -62,7 +62,8 @@ bool sameClips(const Project& a, const Project& b)
             const auto &c = x[i], &d = y[i];
             if (c.id != d.id || c.sourceId != d.sourceId || c.start != d.start || c.sourceOffset != d.sourceOffset
                 || c.length != d.length || c.fadeIn != d.fadeIn || c.fadeOut != d.fadeOut
-                || ! juce::approximatelyEqual(c.gainDb, d.gainDb))
+                || ! juce::approximatelyEqual(c.gainDb, d.gainDb) || ! nearlyEqual(c.stretch, d.stretch)
+                || ! nearlyEqual(c.sourceBpm, d.sourceBpm))
                 return false;
         }
     }

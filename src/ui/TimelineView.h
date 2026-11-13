@@ -36,7 +36,7 @@ public:
     void resized() override;
 
 private:
-    enum class DragMode { None, Move, TrimStart, TrimEnd, FadeIn, FadeOut };
+    enum class DragMode { None, Move, TrimStart, TrimEnd, Stretch, FadeIn, FadeOut };
     struct Drag
     {
         DragMode mode = DragMode::None;
@@ -79,8 +79,9 @@ private:
     bool deleteSelected();
     void paintRuler(juce::Graphics&, juce::Rectangle<int> clip);
     void paintTrack(juce::Graphics&, const Track&, int index, juce::Rectangle<int> clip);
+    void showClipTempo(const juce::String& clipId);
     void paintClip(juce::Graphics&, const Clip&, juce::Rectangle<int> laneRect, juce::Rectangle<int> clip, float alpha,
-                   juce::Colour colour, bool missing);
+                   juce::Colour colour, bool missing, bool stretching);
     void paintWaveform(juce::Graphics&, const Clip&, juce::Rectangle<int> r, juce::Rectangle<int> clip, float alpha,
                        juce::Colour colour);
 
@@ -95,7 +96,9 @@ private:
 
     Drag drag;
     std::optional<Project> preview; // live drag preview; history is untouched until mouse-up
-    double mouseX = -1;
+    std::optional<Project> dragBase; // project at mouse-down; a drag survives changes that leave the clips alone
+    std::unique_ptr<juce::DialogWindow> tempoWindow;
+    double mouseX = -1, mouseY = -1;
     double lastPlayheadX = -1;
     bool draggingRuler = false, selecting = false;
     SamplePos selectAnchor = 0;
