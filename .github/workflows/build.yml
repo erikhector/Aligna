@@ -17,7 +17,7 @@ jobs:
           - os: ubuntu-24.04
             artifact: Aligna-linux
             archive: Aligna-linux.tar.gz
-          - os: macos-14
+          - os: macos-latest
             artifact: Aligna-macos
             archive: Aligna-macos.zip
           - os: windows-2022
