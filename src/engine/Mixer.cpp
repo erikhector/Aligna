@@ -1,4 +1,5 @@
 #include "engine/Mixer.h"
+#include "io/Mp3Encoder.h"
 #include <cmath>
 
 namespace aligna
@@ -157,14 +158,14 @@ void renderMix(const MixSnapshot& snap, SamplePos start, juce::AudioBuffer<float
     }
 }
 
-bool exportMix(const MixSnapshot& snap, const juce::File& wav, int bitDepth, juce::String& error,
+juce::String extensionFor(ExportSettings::Format f)
+{
+    return f == ExportSettings::Format::Mp3 ? ".mp3" : ".wav";
+}
+
+bool exportMix(const MixSnapshot& snap, const juce::File& out, const ExportSettings& settings, juce::String& error,
                const std::function<bool(float)>& progress)
 {
-    if (bitDepth != 16 && bitDepth != 24)
-    {
-        error = "Unsupported bit depth";
-        return false;
-    }
     const auto total = projectEnd(snap.project);
     if (total <= 0)
     {
@@ -172,26 +173,42 @@ bool exportMix(const MixSnapshot& snap, const juce::File& wav, int bitDepth, juc
         return false;
     }
 
-    const auto tmp = wav.getSiblingFile(wav.getFileName() + ".tmp");
+    const auto tmp = out.getSiblingFile(out.getFileName() + ".tmp");
     tmp.deleteFile();
-    auto stream = std::make_unique<juce::FileOutputStream>(tmp);
-    if (stream->failedToOpen())
-    {
-        error = "Could not write " + wav.getFullPathName();
-        return false;
-    }
 
-    juce::WavAudioFormat fmt;
-    std::unique_ptr<juce::AudioFormatWriter> writer(
-        fmt.createWriterFor(stream.get(), snap.project.sampleRate, 2, bitDepth, {}, 0));
-    if (writer == nullptr)
+    const bool mp3 = settings.format == ExportSettings::Format::Mp3;
+    auto encoderPtr = std::make_unique<Mp3Encoder>();
+    auto& encoder = *encoderPtr;
+    std::unique_ptr<juce::AudioFormatWriter> writer;
+    if (mp3)
     {
-        stream.reset();
-        tmp.deleteFile();
-        error = "Could not create WAV writer";
-        return false;
+        if (! encoder.open(tmp, snap.project.sampleRate, settings.kbps, settings.title, error))
+        {
+            encoderPtr.reset();
+            tmp.deleteFile();
+            return false;
+        }
     }
-    stream.release(); // owned by writer
+    else
+    {
+        auto stream = std::make_unique<juce::FileOutputStream>(tmp);
+        if (stream->failedToOpen())
+        {
+            error = "Could not write " + out.getFullPathName();
+            return false;
+        }
+        juce::WavAudioFormat fmt;
+        const int bits = settings.format == ExportSettings::Format::Wav16 ? 16 : 24;
+        writer.reset(fmt.createWriterFor(stream.get(), snap.project.sampleRate, 2, bits, {}, 0));
+        if (writer == nullptr)
+        {
+            stream.reset();
+            tmp.deleteFile();
+            error = "Could not create WAV writer";
+            return false;
+        }
+        stream.release(); // owned by writer
+    }
 
     constexpr int blockSize = 4096;
     juce::AudioBuffer<float> buf(2, blockSize);
@@ -201,9 +218,10 @@ bool exportMix(const MixSnapshot& snap, const juce::File& wav, int bitDepth, juc
         const int n = static_cast<int>(juce::jmin<SamplePos>(blockSize, total - pos));
         buf.clear();
         renderMix(snap, pos, buf, 0, n);
-        if (! writer->writeFromAudioSampleBuffer(buf, 0, n))
+        if (mp3 ? ! encoder.write(buf, n, error) : ! writer->writeFromAudioSampleBuffer(buf, 0, n))
         {
-            error = "Write failed";
+            if (! mp3)
+                error = "Write failed";
             ok = false;
             break;
         }
@@ -214,16 +232,19 @@ bool exportMix(const MixSnapshot& snap, const juce::File& wav, int bitDepth, juc
             break;
         }
     }
+    if (ok && mp3)
+        ok = encoder.finish(error);
     writer.reset(); // flush + close
+    encoderPtr.reset(); // release the file before deleting or moving it
     if (! ok)
     {
         tmp.deleteFile();
         return false;
     }
-    if (! tmp.moveFileTo(wav))
+    if (! tmp.moveFileTo(out))
     {
         tmp.deleteFile();
-        error = "Could not write " + wav.getFullPathName();
+        error = "Could not write " + out.getFullPathName();
         return false;
     }
     return true;

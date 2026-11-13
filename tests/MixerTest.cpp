@@ -51,6 +51,12 @@ juce::AudioBuffer<float> render(const MixSnapshot& s, SamplePos start, int n)
     renderMix(s, start, b, 0, n);
     return b;
 }
+ExportSettings wavSettings(int depth)
+{
+    ExportSettings e;
+    e.format = depth == 16 ? ExportSettings::Format::Wav16 : ExportSettings::Format::Wav24;
+    return e;
+}
 const float k = static_cast<float>(std::cos(juce::MathConstants<double>::pi / 4));
 } // namespace
 
@@ -197,7 +203,7 @@ TEST_CASE("exportMix writes 24-bit wav matching renderMix")
     f.deleteFile();
     juce::String err;
     float last = 0;
-    REQUIRE(exportMix(*s, f, 24, err, [&](float p) { last = p; return true; }));
+    REQUIRE(exportMix(*s, f, wavSettings(24), err, [&](float p) { last = p; return true; }));
     CHECK(last == 1.0f);
     CHECK_FALSE(f.getSiblingFile(f.getFileName() + ".tmp").exists());
 
@@ -218,15 +224,106 @@ TEST_CASE("exportMix writes 24-bit wav matching renderMix")
     // cancel + errors
     auto f2 = juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("aligna_mix_cancel.wav");
     f2.deleteFile();
-    CHECK_FALSE(exportMix(*s, f2, 16, err, [](float) { return false; }));
+    CHECK_FALSE(exportMix(*s, f2, wavSettings(16), err, [](float) { return false; }));
     CHECK(err == "Export cancelled");
     CHECK_FALSE(f2.exists());
     CHECK_FALSE(f2.getSiblingFile(f2.getFileName() + ".tmp").exists());
-    CHECK_FALSE(exportMix(*s, f2, 32, err));
-    CHECK(err == "Unsupported bit depth");
     auto empty = mk({}, {});
-    CHECK_FALSE(exportMix(*empty, f2, 16, err));
+    CHECK_FALSE(exportMix(*empty, f2, wavSettings(16), err));
     CHECK(err == "Nothing to export");
+    f.deleteFile();
+}
+
+namespace
+{
+std::unique_ptr<juce::AudioFormatReader> openAny(const juce::File& f)
+{
+    juce::AudioFormatManager fm;
+    fm.registerBasicFormats();
+    return std::unique_ptr<juce::AudioFormatReader>(fm.createReaderFor(f));
+}
+juce::File tmpOut(const char* n)
+{
+    auto f = juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile(n);
+    f.deleteFile();
+    return f;
+}
+std::shared_ptr<MixSnapshot> sineMix(double rate, int n)
+{
+    auto b = std::make_shared<juce::AudioBuffer<float>>(1, n);
+    for (int i = 0; i < n; ++i)
+        b->setSample(0, i, 0.3f * std::sin(0.05f * static_cast<float>(i)));
+    Track t;
+    t.clips.push_back(mkClip("a", 0, n));
+    auto s = mk({ { "a", b } }, { t });
+    s->project.sampleRate = rate;
+    return s;
+}
+ExportSettings mp3Settings(int kbps = 256, juce::String title = "T")
+{
+    ExportSettings e;
+    e.format = ExportSettings::Format::Mp3;
+    e.kbps = kbps;
+    e.title = title;
+    return e;
+}
+} // namespace
+
+TEST_CASE("extensionFor")
+{
+    CHECK(extensionFor(ExportSettings::Format::Wav16) == ".wav");
+    CHECK(extensionFor(ExportSettings::Format::Wav24) == ".wav");
+    CHECK(extensionFor(ExportSettings::Format::Mp3) == ".mp3");
+}
+
+TEST_CASE("exports mp3")
+{
+    auto s = sineMix(48000, 48000);
+    auto f = tmpOut("aligna_mix_test.mp3");
+    juce::String err;
+    REQUIRE(exportMix(*s, f, mp3Settings(), err));
+    CHECK_FALSE(f.getSiblingFile(f.getFileName() + ".tmp").exists());
+    auto r = openAny(f);
+    REQUIRE(r != nullptr);
+    CHECK(r->numChannels == 2);
+    CHECK_THAT(r->sampleRate, WithinAbs(48000.0, 0.5));
+    CHECK(std::abs(static_cast<int>(r->lengthInSamples) - 48000) <= 2304);
+    r.reset();
+    f.deleteFile();
+}
+
+TEST_CASE("mp3 export of a 96 kHz project is 44.1 kHz with the right duration")
+{
+    auto s = sineMix(96000, 96000);
+    auto f = tmpOut("aligna_mix_96k.mp3");
+    juce::String err;
+    REQUIRE(exportMix(*s, f, mp3Settings(192), err));
+    auto r = openAny(f);
+    REQUIRE(r != nullptr);
+    CHECK_THAT(r->sampleRate, WithinAbs(44100.0, 0.5));
+    CHECK(std::abs(static_cast<int>(r->lengthInSamples) - 44100) <= 2304);
+    r.reset();
+    f.deleteFile();
+}
+
+TEST_CASE("mp3 cancel leaves no file")
+{
+    auto s = sineMix(48000, 48000);
+    auto f = tmpOut("aligna_mix_cancel.mp3");
+    juce::String err;
+    CHECK_FALSE(exportMix(*s, f, mp3Settings(), err, [](float) { return false; }));
+    CHECK(err == "Export cancelled");
+    CHECK_FALSE(f.exists());
+    CHECK_FALSE(f.getSiblingFile(f.getFileName() + ".tmp").exists());
+}
+
+TEST_CASE("mp3 export with odd title and a very short mix")
+{
+    auto s = sineMix(44100, 100);
+    auto f = tmpOut("aligna_mix_short.mp3");
+    juce::String err;
+    REQUIRE(exportMix(*s, f, mp3Settings(320, juce::String::fromUTF8("Mix \xc3\xb6 1")), err));
+    CHECK(openAny(f) != nullptr);
     f.deleteFile();
 }
 

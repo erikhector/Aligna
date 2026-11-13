@@ -12,7 +12,7 @@ or automatically by cross-correlation), listen, and export a mixed WAV. Source a
 - Auto-align: pick a reference clip and shift other clips to match it by cross-correlation (shifts only, never stretches; reports inverted polarity). You confirm before anything moves.
 - Undo/redo for every edit.
 - Projects are saved as `.aligna` JSON files (audio paths relative to the project when possible). If audio files have moved, the project still opens, the missing clips are shown in red and the rest plays.
-- Export the mix as a stereo WAV, 16- or 24-bit, at the project sample rate.
+- Export the mix as a stereo WAV (16- or 24-bit) or MP3 (192–320 kbps).
 
 ## Keyboard shortcuts
 
@@ -99,3 +99,5 @@ Release builds from CI are not code-signed.
 AGPL-3.0, see [LICENSE](LICENSE) (JUCE 8 open-source terms).
 
 Time-stretching uses [Rubber Band Library](https://breakfastquay.com/rubberband/) (v4.0.0, R2 engine, GPL-2.0-or-later, copyright Particular Programs Ltd), built into Aligna from its single-file source; Aligna is distributed under terms compatible with it.
+
+MP3 encoding uses [LAME](https://lame.sourceforge.io/) 3.100 (LGPL-2.0-or-later) — MP3 encoding, built into Aligna.

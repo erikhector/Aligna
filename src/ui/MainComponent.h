@@ -56,7 +56,7 @@ private:
     void doNew();
     void doOpen();
     void doExport();
-    void startExport(int bitDepth, const juce::File&);
+    void startExport(const ExportSettings&, const juce::File&);
     void projectChanged();
     void layoutHeaders();
     std::vector<juce::String> alignTargets() const; // selected clips other than the reference, project order
