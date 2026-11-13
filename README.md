@@ -88,3 +88,5 @@ Release builds from CI are not code-signed.
 ## License
 
 AGPL-3.0, see [LICENSE](LICENSE) (JUCE 8 open-source terms).
+
+Time-stretching uses [Rubber Band Library](https://breakfastquay.com/rubberband/) (v4.0.0, GPL-2.0-or-later, Particular Programs Ltd).

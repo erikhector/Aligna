@@ -27,7 +27,12 @@ FetchContent_Declare(Catch2
   GIT_REPOSITORY https://github.com/catchorg/Catch2.git
   GIT_TAG v3.7.1
   GIT_SHALLOW ON)
-FetchContent_MakeAvailable(JUCE Catch2)
+# Rubber Band (GPL-2.0-or-later): no CMake build, we compile its single-file unit into aligna_core.
+FetchContent_Declare(rubberband
+  GIT_REPOSITORY https://github.com/breakfastquay/rubberband.git
+  GIT_TAG v4.0.0
+  GIT_SHALLOW ON)
+FetchContent_MakeAvailable(JUCE Catch2 rubberband)
 
 # Compile definitions shared by every target so app and tests see the same JUCE config.
 set(ALIGNA_JUCE_DEFS
@@ -56,13 +61,26 @@ target_sources(aligna_core PRIVATE
   src/engine/PlaybackChain.cpp
   src/engine/PlaybackEngine.cpp
   src/engine/SourcePool.cpp
+  src/engine/Stretcher.cpp
   src/model/Grid.cpp
   src/align/Correlate.cpp
   src/align/AlignClips.cpp
   src/align/AlignResults.cpp
   src/ui/TimelineMapping.cpp
 )
+# Third-party Rubber Band unit: built-in FFT/resampler (vDSP on Apple), warnings silenced for this file only.
+set(RB_SINGLE ${rubberband_SOURCE_DIR}/single/RubberBandSingle.cpp)
+target_sources(aligna_core PRIVATE ${RB_SINGLE})
+if(MSVC)
+  set_source_files_properties(${RB_SINGLE} PROPERTIES COMPILE_OPTIONS "/w" COMPILE_DEFINITIONS "NOMINMAX")
+else()
+  set_source_files_properties(${RB_SINGLE} PROPERTIES COMPILE_OPTIONS "-w")
+endif()
 target_include_directories(aligna_core PUBLIC src)
+target_include_directories(aligna_core PRIVATE ${rubberband_SOURCE_DIR})
+if(APPLE)
+  target_link_libraries(aligna_core PUBLIC "-framework Accelerate")
+endif()
 target_compile_features(aligna_core PUBLIC cxx_std_20)
 target_compile_definitions(aligna_core PUBLIC ${ALIGNA_JUCE_DEFS})
 target_link_libraries(aligna_core
@@ -121,6 +139,7 @@ add_executable(aligna_tests
   tests/AlignTest.cpp
   tests/AlignResultsTest.cpp
   tests/FileNamingTest.cpp
+  tests/StretcherTest.cpp
 )
 target_link_libraries(aligna_tests PRIVATE aligna_core Catch2::Catch2WithMain)
 list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)
