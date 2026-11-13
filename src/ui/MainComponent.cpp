@@ -282,12 +282,36 @@ void MainComponent::saveAs(std::function<void()> proceed)
                              auto f = fc.getResult();
                              if (f != juce::File())
                              {
-                                 f = f.getParentDirectory().getChildFile(withExtension(f.getFileName(), ".aligna"));
-                                 if (safe->doSave(f) && proceed)
-                                     proceed();
+                                 const auto target = f.getParentDirectory().getChildFile(withExtension(f.getFileName(), ".aligna"));
+                                 safe->confirmOverwrite(f, target, [safe, target, proceed] {
+                                     if (safe->doSave(target) && proceed)
+                                         proceed();
+                                 });
                              }
                              safe->timeline.grabKeyboardFocus();
                          });
+}
+
+void MainComponent::confirmOverwrite(const juce::File& chosen, const juce::File& target, std::function<void()> go)
+{
+    // The chooser already asked when the typed name itself exists.
+    if (target == chosen || ! target.exists())
+    {
+        go();
+        return;
+    }
+    juce::Component::SafePointer<MainComponent> safe(this);
+    auto opts = juce::MessageBoxOptions()
+                    .withIconType(juce::MessageBoxIconType::QuestionIcon)
+                    .withTitle("Replace existing file?")
+                    .withMessage(target.getFileName() + " already exists. Do you want to replace it?")
+                    .withButton("Overwrite")
+                    .withButton("Cancel")
+                    .withAssociatedComponent(this);
+    juce::AlertWindow::showAsync(opts, [safe, go](int r) {
+        if (safe != nullptr && r == 1)
+            go();
+    });
 }
 
 void MainComponent::doNew()
@@ -363,9 +387,9 @@ void MainComponent::doExport()
                            const int depth = w->getComboBoxComponent("depth")->getSelectedItemIndex() == 0 ? 16 : 24;
                            auto& self = *safe;
                            auto base = self.app.currentFile() != juce::File()
-                                           ? self.app.currentFile().withFileExtension("wav")
+                                           ? self.app.currentFile().getSiblingFile(self.app.currentFile().getFileNameWithoutExtension() + " mix.wav")
                                            : juce::File::getSpecialLocation(juce::File::userDocumentsDirectory)
-                                                 .getChildFile("Mix.wav");
+                                                 .getChildFile("Untitled mix.wav");
                            self.chooser = std::make_unique<juce::FileChooser>("Export mix", base, "*.wav");
                            self.chooser->launchAsync(
                                juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles
@@ -375,8 +399,18 @@ void MainComponent::doExport()
                                        return;
                                    auto f = fc.getResult();
                                    if (f != juce::File())
-                                       safe->startExport(depth, f.getParentDirectory().getChildFile(
-                                                                    withExtension(f.getFileName(), ".wav")));
+                                   {
+                                       const auto target = f.getParentDirectory().getChildFile(withExtension(f.getFileName(), ".wav"));
+                                       if (isProjectSource(safe->app.history().current(), target))
+                                       {
+                                           juce::AlertWindow::showMessageBoxAsync(
+                                               juce::MessageBoxIconType::WarningIcon, "Export failed",
+                                               "Can't export over one of the project's source audio files.");
+                                           safe->timeline.grabKeyboardFocus();
+                                           return;
+                                       }
+                                       safe->confirmOverwrite(f, target, [safe, depth, target] { safe->startExport(depth, target); });
+                                   }
                                    else
                                        safe->timeline.grabKeyboardFocus();
                                });

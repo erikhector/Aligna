@@ -51,6 +51,8 @@ private:
     void saveAs(std::function<void()> proceed);
     bool doSave(const juce::File&);
     void runFileCommand(int menuId);
+    // If `target` differs from what the chooser returned and exists, asks Overwrite / Cancel first.
+    void confirmOverwrite(const juce::File& chosen, const juce::File& target, std::function<void()> go);
     void doNew();
     void doOpen();
     void doExport();

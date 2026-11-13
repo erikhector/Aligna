@@ -28,3 +28,14 @@ juce::String missingFilesMessage(const std::vector<juce::String>& paths)
     return m;
 }
 } // namespace aligna
+
+namespace aligna
+{
+bool isProjectSource(const Project& p, const juce::File& f)
+{
+    for (auto& s : p.sources)
+        if (juce::File(s.path) == f)
+            return true;
+    return false;
+}
+} // namespace aligna

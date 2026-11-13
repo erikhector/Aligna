@@ -38,3 +38,16 @@ TEST_CASE("missing files message")
     REQUIRE(! m.contains("/f20"));
     REQUIRE(m.endsWith(juce::String(juce::CharPointer_UTF8("\xE2\x80\xA6")) + "and 2 more"));
 }
+
+TEST_CASE("isProjectSource matches source paths only")
+{
+    Project p;
+    SourceInfo a;
+    a.id = "a";
+    a.path = "/music/take1.wav";
+    p.sources.push_back(a);
+    REQUIRE(isProjectSource(p, juce::File("/music/take1.wav")));
+    REQUIRE(! isProjectSource(p, juce::File("/music/take1 mix.wav")));
+    REQUIRE(! isProjectSource(p, juce::File("/other/take1.wav")));
+    REQUIRE(! isProjectSource(Project {}, juce::File("/music/take1.wav")));
+}
