@@ -16,13 +16,13 @@ jobs:
         include:
           - os: ubuntu-24.04
             artifact: Aligna-linux
-            path: build/Aligna_artefacts/Release/Aligna
+            archive: Aligna-linux.tar.gz
           - os: macos-14
             artifact: Aligna-macos
-            path: build/Aligna_artefacts/Release/Aligna.app
+            archive: Aligna-macos.zip
           - os: windows-2022
             artifact: Aligna-windows
-            path: build/Aligna_artefacts/Release/Aligna.exe
+            archive: Aligna-windows.zip
     steps:
       - uses: actions/checkout@v4
 
@@ -43,11 +43,28 @@ jobs:
       - name: Test
         run: ctest --test-dir build -C Release --output-on-failure
 
-      - name: Upload app
+      # Archive here: upload/download-artifact drops permissions (executable
+      # bits) and flattens directories, so ship single archive files.
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        run: tar -C build/Aligna_artefacts/Release -czf ${{ matrix.archive }} Aligna
+
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          cd build/Aligna_artefacts/Release
+          ditto -c -k --keepParent Aligna.app "$GITHUB_WORKSPACE/${{ matrix.archive }}"
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path build/Aligna_artefacts/Release/Aligna.exe -DestinationPath ${{ matrix.archive }}
+
+      - name: Upload archive
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: ${{ matrix.path }}
+          path: ${{ matrix.archive }}
           if-no-files-found: error
 
   release:
@@ -60,14 +77,8 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          path: artifacts
-
-      - name: Package
-        run: |
-          mkdir dist
-          tar -C artifacts/Aligna-linux -czf dist/Aligna-linux.tar.gz Aligna
-          (cd artifacts/Aligna-macos && zip -r -y ../../dist/Aligna-macos.zip .)
-          (cd artifacts/Aligna-windows && zip -r ../../dist/Aligna-windows.zip Aligna.exe)
+          path: dist
+          merge-multiple: true
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
