@@ -64,11 +64,17 @@ std::optional<ClipAlignment> computeAlignment(const MixSnapshot& s, const juce::
         return std::nullopt;
     }
     for (const Clip* c : { ref, tgt })
+    {
+        const auto* src = findSource(s.project, c->sourceId);
+        // A missing or unknown source is never rendered: it takes the same silent path as an unstretched one.
+        if (src == nullptr || src->missing)
+            continue;
         if (! nearlyEqual(c->stretch, 1.0) && s.audio.count(bufferKey(*c)) == 0)
         {
             error = juce::String::fromUTF8("Clip is still stretching \xe2\x80\x94 try again in a moment");
             return std::nullopt;
         }
+    }
 
     const double rate = s.project.sampleRate;
     const auto maxLag =

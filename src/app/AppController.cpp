@@ -68,6 +68,7 @@ void AppController::newProject(double sampleRate)
     Project p;
     p.sampleRate = sampleRate;
     hist.reset(std::move(p));
+    stretched.clear();
     syncProjectRate();
     projectChanged();
 }
@@ -84,6 +85,7 @@ bool AppController::openProject(const juce::File& f, juce::String& error)
         sources.load(s, p->sampleRate); // sets missing on failure
     hist.reset(std::move(*p));
     file = f;
+    stretched.clear(); // never reuse renders of an earlier project, whose sources may have been edited
     syncProjectRate();
     projectChanged();
     return true;

@@ -455,6 +455,15 @@ private:
 
 void MainComponent::startExport(int bitDepth, const juce::File& f)
 {
+    if (const int n = countStretching(app.history().current(), app.pool(), app.stretchCache()); n > 0)
+    {
+        juce::AlertWindow::showMessageBoxAsync(
+            juce::MessageBoxIconType::WarningIcon, "Export",
+            juce::String(n) + (n == 1 ? " clip is" : " clips are") + " still stretching "
+                + juce::String::fromUTF8("\xe2\x80\x94") + " export again in a moment.");
+        timeline.grabKeyboardFocus();
+        return;
+    }
     // Snapshot on the message thread; the worker only reads it.
     auto snap = makeSnapshot(app.history().current(), app.pool(), app.stretchCache());
     juce::Component::SafePointer<MainComponent> safe(this);

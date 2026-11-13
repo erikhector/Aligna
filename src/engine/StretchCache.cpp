@@ -61,6 +61,34 @@ StretchCache::~StretchCache()
     pool.removeAllJobs(true, -1); // drops queued jobs, waits for running ones (they stop at the next progress call)
 }
 
+void StretchCache::clear()
+{
+    for (auto& [key, job] : jobs)
+        job->cancelled.store(true);
+    jobs.clear();
+    needed.clear();
+    entries.clear();
+    used = 0;
+    alive = std::make_shared<Token>(Token { this }); // older jobs hold a weak_ptr to the previous token
+}
+
+int countStretching(const Project& p, const SourcePool&, const StretchCache& cache)
+{
+    int n = 0;
+    for (auto& t : p.tracks)
+        for (auto& c : t.clips)
+        {
+            if (nearlyEqual(c.stretch, 1.0))
+                continue;
+            auto* s = findSource(p, c.sourceId);
+            if (s == nullptr || s->missing)
+                continue;
+            if (cache.get(bufferKey(c)) == nullptr)
+                ++n;
+        }
+    return n;
+}
+
 void StretchCache::require(const Project& p, const SourcePool& sources)
 {
     collectFinished(); // keep results that finished but were not delivered yet

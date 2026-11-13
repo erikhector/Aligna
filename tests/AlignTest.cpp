@@ -226,3 +226,30 @@ TEST_CASE("computeAlignment: a stretched clip without its buffer is still stretc
         CHECK(res->newStart == 48000);
     }
 }
+
+TEST_CASE("computeAlignment: a stretched clip with a missing source takes the missing-source path")
+{
+    // Unstretched missing source: the clip renders silent.
+    auto base = twoClipSnapshot(48000);
+    base.project.sources[0].missing = true;
+    base.audio.clear();
+    juce::String missingErr;
+    CHECK_FALSE(computeAlignment(base, "ref", "tgt", std::nullopt, 30.0, noProgress, missingErr).has_value());
+
+    for (bool nullSource : { false, true })
+    {
+        CAPTURE(nullSource);
+        auto s = twoClipSnapshot(48000);
+        s.audio.clear();
+        if (nullSource)
+            s.project.sources.clear();
+        else
+            s.project.sources[0].missing = true;
+        s.project.tracks[1].clips[0].stretch = 1.5;
+        juce::String err;
+        CHECK_FALSE(computeAlignment(s, "ref", "tgt", std::nullopt, 30.0, noProgress, err).has_value());
+        CHECK(err == missingErr);
+        CHECK(err.isNotEmpty());
+        CHECK(! err.contains("stretching"));
+    }
+}

@@ -29,6 +29,9 @@ public:
     std::function<void()> onReady; // called on the message thread after any render completes
     void waitForIdle();            // tests only: block until no jobs are queued/running, then deliver onReady
     size_t bytesUsed() const { return used; }
+    // Cancel and forget every job and drop every entry (bytesUsed() == 0). Safe with jobs running: late deliveries
+    // from them are ignored, as after destruction.
+    void clear();
 
 private:
     struct JobState
@@ -61,9 +64,12 @@ private:
     std::map<juce::String, Entry> entries;
     std::map<juce::String, std::shared_ptr<JobState>> jobs; // queued, running or finished-but-not-collected
     std::set<juce::String> needed;                          // keys the last required project uses
-    std::shared_ptr<Token> alive;
+    std::shared_ptr<Token> alive; // replaced by clear() so deliveries from older jobs expire
     juce::ThreadPool pool;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(StretchCache)
 };
+
+// Clips that need a stretched buffer (source present and not missing, ratio != 1) which the cache doesn't have yet.
+int countStretching(const Project&, const SourcePool&, const StretchCache&);
 } // namespace aligna

@@ -235,3 +235,88 @@ TEST_CASE("StretchCache: destroying it with renders in flight is safe", "[stretc
     }
     CHECK(ready == 0);
 }
+
+TEST_CASE("countStretching counts clips whose stretched buffer is not ready", "[stretchcache]")
+{
+    juce::ScopedJuceInitialiser_GUI gui;
+    TempDir t;
+    SourcePool pool;
+    Project p;
+    const auto clip = addSineSource(p, pool, t.dir, 2.0);
+    StretchCache cache;
+
+    CHECK(countStretching(p, pool, cache) == 1); // not rendered yet
+    cache.require(p, pool);
+    cache.waitForIdle();
+    CHECK(countStretching(p, pool, cache) == 0); // ready
+    REQUIRE(cache.get(bufferKey(clip)) != nullptr);
+
+    SECTION("a second not-ready clip")
+    {
+        Clip c2 = clip;
+        c2.id = newId();
+        c2.stretch = 3.0;
+        p.tracks[0].clips.push_back(c2);
+        CHECK(countStretching(p, pool, cache) == 1);
+    }
+    SECTION("missing source is not counted")
+    {
+        Clip c2 = clip;
+        c2.id = newId();
+        c2.stretch = 3.0;
+        p.tracks[0].clips.push_back(c2);
+        p.sources[0].missing = true;
+        CHECK(countStretching(p, pool, cache) == 0);
+    }
+    SECTION("ratio 1 is not counted")
+    {
+        p.tracks[0].clips[0].stretch = 1.0;
+        CHECK(countStretching(p, pool, cache) == 0);
+    }
+    SECTION("unknown source is not counted")
+    {
+        Clip c2 = clip;
+        c2.stretch = 3.0;
+        p.tracks[0].clips.push_back(c2);
+        p.sources.clear();
+        CHECK(countStretching(p, pool, cache) == 0);
+    }
+}
+
+TEST_CASE("StretchCache::clear drops entries and ignores late renders", "[stretchcache]")
+{
+    juce::ScopedJuceInitialiser_GUI gui;
+    TempDir t;
+    SourcePool pool;
+    Project p;
+    const auto clip = addSineSource(p, pool, t.dir, 2.0);
+
+    StretchCache cache;
+    int ready = 0;
+    cache.onReady = [&] { ++ready; };
+    cache.require(p, pool);
+    cache.waitForIdle();
+    REQUIRE(cache.get(bufferKey(clip)) != nullptr);
+    CHECK(cache.bytesUsed() > 0);
+
+    cache.clear();
+    CHECK(cache.get(bufferKey(clip)) == nullptr);
+    CHECK(cache.bytesUsed() == 0);
+    CHECK_FALSE(cache.isPending(bufferKey(clip)));
+
+    // With a job in flight: clear, and nothing stale is stored afterwards.
+    cache.require(p, pool);
+    CHECK(cache.isPending(bufferKey(clip)));
+    cache.clear();
+    CHECK_FALSE(cache.isPending(bufferKey(clip)));
+    ready = 0;
+    cache.waitForIdle();
+    CHECK(cache.get(bufferKey(clip)) == nullptr);
+    CHECK(cache.bytesUsed() == 0);
+    CHECK(ready == 0);
+
+    // It still works afterwards.
+    cache.require(p, pool);
+    cache.waitForIdle();
+    CHECK(cache.get(bufferKey(clip)) != nullptr);
+}

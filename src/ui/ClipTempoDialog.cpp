@@ -62,9 +62,16 @@ void ClipTempoDialog::resized()
 void ClipTempoDialog::updateInfo()
 {
     info.setText({}, juce::dontSendNotification);
-    const double bpm = bpmField.getText().getDoubleValue();
-    if (bpm <= 0.0)
+    const auto text = bpmField.getText().trim();
+    const double bpm = text.getDoubleValue();
+    okButton.setEnabled(text.isEmpty() || (bpm >= 20.0 && bpm <= 400.0));
+    if (text.isEmpty())
         return;
+    if (bpm < 20.0 || bpm > 400.0)
+    {
+        info.setText(juce::String::fromUTF8("BPM must be 20\xe2\x80\x93" "400"), juce::dontSendNotification);
+        return;
+    }
     Project copy = app.history().current();
     const auto* c = findClip(copy, clipId);
     if (c == nullptr)
@@ -78,7 +85,9 @@ void ClipTempoDialog::updateInfo()
 void ClipTempoDialog::commit()
 {
     const auto text = bpmField.getText().trim();
-    const double bpm = text.isEmpty() ? 0.0 : juce::jlimit(20.0, 400.0, text.getDoubleValue());
+    const double bpm = text.isEmpty() ? 0.0 : text.getDoubleValue();
+    if (! text.isEmpty() && (bpm < 20.0 || bpm > 400.0))
+        return; // invalid: the hint is shown and OK is disabled
     const auto id = clipId;
     app.history().perform("Clip Tempo", [id, bpm](Project& p) { return setClipTempo(p, id, bpm); });
     close();
