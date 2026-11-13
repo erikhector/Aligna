@@ -1,4 +1,5 @@
 #include "edit/ClipOps.h"
+#include <cmath>
 
 namespace aligna
 {
@@ -9,6 +10,26 @@ void clampFades(Clip& c)
     const SamplePos m = c.length / 2;
     c.fadeIn = std::clamp<SamplePos>(c.fadeIn, 0, m);
     c.fadeOut = std::clamp<SamplePos>(c.fadeOut, 0, m);
+}
+
+// Rescales a clip to a new ratio (already clamped); the start never moves.
+void applyStretch(const Project& p, Clip& c, double r2)
+{
+    const double k = r2 / c.stretch;
+    auto scale = [k](SamplePos v) { return static_cast<SamplePos>(std::llround(static_cast<double>(v) * k)); };
+    c.sourceOffset = scale(c.sourceOffset);
+    c.length = std::max<SamplePos>(1, scale(c.length));
+    c.fadeIn = scale(c.fadeIn);
+    c.fadeOut = scale(c.fadeOut);
+    c.stretch = r2;
+    if (findSource(p, c.sourceId) != nullptr)
+        c.length = std::min(c.length, std::max<SamplePos>(1, stretchedSourceLength(p, c) - c.sourceOffset));
+    clampFades(c);
+}
+
+double clampRatio(const Project& p, const Clip& c, double r)
+{
+    return std::clamp(r, kMinStretch, std::max(kMinStretch, maxStretchFor(p, c)));
 }
 } // namespace
 
@@ -37,7 +58,7 @@ juce::String addTrackWithClip(Project& p, const SourceInfo& src, const juce::Str
     c.sourceId = src.id;
     c.start = 0;
     c.sourceOffset = 0;
-    c.length = src.length;
+    c.length = src.length; // stretch is 1.0, so this is the stretched source length
     t.clips.push_back(c);
     p.tracks.push_back(std::move(t));
     return c.id;
@@ -89,7 +110,7 @@ bool trimClipEnd(Project& p, const juce::String& clipId, SamplePos newEnd)
     auto* s = findSource(p, c->sourceId);
     if (s == nullptr)
         return false;
-    const SamplePos maxLen = std::max<SamplePos>(1, s->length - c->sourceOffset);
+    const SamplePos maxLen = std::max<SamplePos>(1, stretchedSourceLength(p, *c) - c->sourceOffset);
     c->length = std::clamp<SamplePos>(newEnd - c->start, 1, maxLen);
     clampFades(*c);
     return true;
@@ -147,6 +168,61 @@ bool setClipFades(Project& p, const juce::String& clipId, SamplePos fadeIn, Samp
     c->fadeIn = fadeIn;
     c->fadeOut = fadeOut;
     clampFades(*c);
+    return true;
+}
+
+bool setClipStretch(Project& p, const juce::String& clipId, double newStretch)
+{
+    auto* c = findClip(p, clipId);
+    if (c == nullptr || !std::isfinite(newStretch))
+        return false;
+    const double r = clampRatio(p, *c, newStretch);
+    if (nearlyEqual(r, c->stretch) && c->sourceBpm <= 0.0)
+        return false;
+    if (!nearlyEqual(r, c->stretch))
+        applyStretch(p, *c, r);
+    c->sourceBpm = 0.0;
+    return true;
+}
+
+bool setClipTempo(Project& p, const juce::String& clipId, double sourceBpm)
+{
+    auto* c = findClip(p, clipId);
+    if (c == nullptr || !std::isfinite(sourceBpm))
+        return false;
+    if (sourceBpm <= 0.0)
+    {
+        if (c->sourceBpm <= 0.0)
+            return false;
+        c->sourceBpm = 0.0;
+        return true;
+    }
+    const double bpm = std::clamp(sourceBpm, 20.0, 400.0);
+    const double r = clampRatio(p, *c, bpm / p.bpm);
+    if (nearlyEqual(r, c->stretch) && nearlyEqual(bpm, c->sourceBpm))
+        return false;
+    if (!nearlyEqual(r, c->stretch))
+        applyStretch(p, *c, r);
+    c->sourceBpm = bpm;
+    return true;
+}
+
+bool setProjectBpm(Project& p, double bpm)
+{
+    if (!std::isfinite(bpm))
+        return false;
+    bpm = std::clamp(bpm, 20.0, 400.0);
+    if (nearlyEqual(bpm, p.bpm))
+        return false;
+    p.bpm = bpm;
+    for (auto& t : p.tracks)
+        for (auto& c : t.clips)
+            if (c.sourceBpm > 0.0)
+            {
+                const double r = clampRatio(p, c, c.sourceBpm / bpm);
+                if (!nearlyEqual(r, c.stretch))
+                    applyStretch(p, c, r);
+            }
     return true;
 }
 

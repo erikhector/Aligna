@@ -1,5 +1,6 @@
 #include "ui/TransportBar.h"
 #include "model/Grid.h"
+#include "edit/ClipOps.h"
 #include <cmath>
 
 namespace aligna
@@ -94,7 +95,7 @@ void TransportBar::commitBpm()
 {
     const auto v = juce::jlimit(20.0, 400.0, bpmField.getText().getDoubleValue());
     if (std::abs(v - app.history().current().bpm) > 1e-9)
-        app.history().perform("Set BPM", [v](Project& p) { p.bpm = v; return true; });
+        app.history().perform("Tempo", [v](Project& p) { return setProjectBpm(p, v); });
     bpmField.setText(juce::String(v, 2).trimCharactersAtEnd("0").trimCharactersAtEnd("."), juce::dontSendNotification);
 }
 

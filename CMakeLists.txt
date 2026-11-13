@@ -140,6 +140,7 @@ add_executable(aligna_tests
   tests/AlignResultsTest.cpp
   tests/FileNamingTest.cpp
   tests/StretcherTest.cpp
+  tests/StretchOpsTest.cpp
 )
 target_link_libraries(aligna_tests PRIVATE aligna_core Catch2::Catch2WithMain)
 list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)

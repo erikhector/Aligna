@@ -1,9 +1,11 @@
 #include "io/ProjectFile.h"
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <catch2/matchers/catch_matchers.hpp>
 
 using namespace aligna;
+using Catch::Approx;
 
 namespace
 {
@@ -144,7 +146,7 @@ TEST_CASE("load rejects bad files", "[projectfile]")
 
     SECTION("newer format")
     {
-        writeText(f, R"({"format":2})");
+        writeText(f, R"({"format":3})");
         CHECK_FALSE(loadProject(f, err).has_value());
         CHECK(err.contains("newer version"));
     }
@@ -293,4 +295,61 @@ TEST_CASE("numChannels validated", "[projectfile]")
     writeText(f, baseJson().replace("\"format\":1", "\"format\":1e300"));
     CHECK_FALSE(loadProject(f, err).has_value());
     CHECK(err.contains("newer version"));
+}
+
+TEST_CASE("format 2 stretch round trip", "[projectfile][stretch]")
+{
+    TempDir td;
+    auto audio = td.dir.getChildFile("a.wav");
+    audio.replaceWithText("x");
+    auto p = makeProject(audio);
+    p.tracks[0].clips[0].stretch = 1.5;
+    p.tracks[0].clips[0].sourceBpm = 98;
+    auto file = td.dir.getChildFile("proj.aligna");
+    juce::String err;
+    REQUIRE(saveProject(p, file, err));
+    CHECK(file.loadFileAsString().contains("\"format\": 2"));
+    auto q = loadProject(file, err);
+    REQUIRE(q.has_value());
+    CHECK(q->tracks[0].clips[0].stretch == Approx(1.5));
+    CHECK(q->tracks[0].clips[0].sourceBpm == Approx(98.0));
+    CHECK(q->tracks[0].clips[1].stretch == Approx(1.0));
+    CHECK(q->tracks[0].clips[1].sourceBpm == Approx(0.0));
+}
+
+TEST_CASE("format 1 loads with stretch defaults", "[projectfile][stretch]")
+{
+    TempDir td;
+    auto f = td.dir.getChildFile("p.aligna");
+    juce::String err;
+    writeText(f, baseJson());
+    auto q = loadProject(f, err);
+    REQUIRE(q.has_value());
+    CHECK(q->tracks[0].clips[0].stretch == Approx(1.0));
+    CHECK(q->tracks[0].clips[0].sourceBpm == Approx(0.0));
+}
+
+TEST_CASE("stretch and sourceBpm validated", "[projectfile][stretch]")
+{
+    TempDir td;
+    auto f = td.dir.getChildFile("p.aligna");
+    juce::String err;
+    auto clipWith = [](const juce::String& extra)
+    {
+        return R"({"id":"c","sourceId":"s","start":"0","sourceOffset":"0","length":"10","gainDb":0,"fadeIn":"0","fadeOut":"0",)" + extra + "}";
+    };
+    auto fmt2 = [&](const juce::String& extra) { return baseJson({}, clipWith(extra)).replace("\"format\":1", "\"format\":2"); };
+
+    writeText(f, fmt2(R"("stretch":5.0)"));
+    CHECK_FALSE(loadProject(f, err).has_value());
+    CHECK(err.contains("stretch"));
+    writeText(f, fmt2(R"("stretch":0.1)"));
+    CHECK_FALSE(loadProject(f, err).has_value());
+    writeText(f, fmt2(R"("sourceBpm":10)"));
+    CHECK_FALSE(loadProject(f, err).has_value());
+    CHECK(err.contains("sourceBpm"));
+    writeText(f, fmt2(R"("sourceBpm":401)"));
+    CHECK_FALSE(loadProject(f, err).has_value());
+    writeText(f, fmt2(R"("stretch":0.25,"sourceBpm":0)"));
+    CHECK(loadProject(f, err).has_value());
 }

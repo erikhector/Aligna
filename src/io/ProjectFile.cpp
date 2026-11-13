@@ -5,7 +5,7 @@ namespace aligna
 {
 namespace
 {
-constexpr int kFormat = 1;
+constexpr int kFormat = 2;
 
 juce::var posToVar(SamplePos v) { return juce::String(static_cast<juce::int64>(v)); }
 
@@ -149,6 +149,8 @@ bool saveProject(const Project& p, const juce::File& file, juce::String& error)
             co->setProperty("gainDb", static_cast<double>(c.gainDb));
             co->setProperty("fadeIn", posToVar(c.fadeIn));
             co->setProperty("fadeOut", posToVar(c.fadeOut));
+            co->setProperty("stretch", c.stretch);
+            co->setProperty("sourceBpm", c.sourceBpm);
             clips.add(juce::var(co));
         }
         o->setProperty("clips", clips);
@@ -204,7 +206,7 @@ std::optional<Project> loadProject(const juce::File& file, juce::String& error)
         error = "This project was saved by a newer version of Aligna (format " + juce::String(format) + ")";
         return std::nullopt;
     }
-    if (format < kFormat)
+    if (format < 1)
     {
         error = "Unsupported project format " + juce::String(format);
         return std::nullopt;
@@ -277,6 +279,27 @@ std::optional<Project> loadProject(const juce::File& file, juce::String& error)
             c.fadeIn = r.pos(cv, "fadeIn", cctx);
             c.fadeOut = r.pos(cv, "fadeOut", cctx);
             if (r.failed()) return fail();
+            // Optional keys (format 1 has neither): a missing key means the default.
+            if (auto* o = cv.getDynamicObject(); o != nullptr && o->hasProperty("stretch"))
+            {
+                c.stretch = r.num(cv, "stretch", cctx);
+                if (r.failed()) return fail();
+                if (!(c.stretch >= kMinStretch && c.stretch <= kMaxStretch))
+                {
+                    error = "Invalid stretch: must be between 0.25 and 4" + cctx;
+                    return std::nullopt;
+                }
+            }
+            if (auto* o = cv.getDynamicObject(); o != nullptr && o->hasProperty("sourceBpm"))
+            {
+                c.sourceBpm = r.num(cv, "sourceBpm", cctx);
+                if (r.failed()) return fail();
+                if (!(nearlyEqual(c.sourceBpm, 0) || (c.sourceBpm >= 20 && c.sourceBpm <= 400)))
+                {
+                    error = "Invalid sourceBpm: must be 0 or between 20 and 400" + cctx;
+                    return std::nullopt;
+                }
+            }
             if (findSource(p, c.sourceId) == nullptr)
             {
                 error = "Clip \"" + c.id + "\" refers to unknown source \"" + c.sourceId + "\"";
