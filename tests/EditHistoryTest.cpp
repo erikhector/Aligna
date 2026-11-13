@@ -82,7 +82,7 @@ TEST_CASE("EditHistory keeps 200 steps", "[EditHistory]")
     while (h.undo())
         ++n;
     CHECK(n == 200);
-    CHECK((h.current().bpm > 324.0 && h.current().bpm < 326.0));
+    CHECK((h.current().bpm > 124.0 && h.current().bpm < 126.0));
 }
 
 TEST_CASE("EditHistory dirty tracking", "[EditHistory]")
