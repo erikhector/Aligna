@@ -5,48 +5,21 @@
 
 namespace aligna
 {
-void AppController::DeviceCallback::audioDeviceAboutToStart(juce::AudioIODevice* d)
-{
-    const auto deviceRate = d != nullptr ? d->getCurrentSampleRate() : 0.0;
-    if (deviceRate > 0.0)
-        owner.resampler.setResamplingRatio(owner.projectRate.load() / deviceRate);
-    owner.player.audioDeviceAboutToStart(d);
-}
-
-void AppController::DeviceCallback::audioDeviceStopped() { owner.player.audioDeviceStopped(); }
-
-void AppController::DeviceCallback::audioDeviceIOCallbackWithContext(const float* const* in, int numIn,
-                                                                     float* const* out, int numOut, int n,
-                                                                     const juce::AudioIODeviceCallbackContext& ctx)
-{
-    owner.player.audioDeviceIOCallbackWithContext(in, numIn, out, numOut, n, ctx);
-}
-
 AppController::AppController()
 {
     hist.onChange = [this] { rebuildSnapshot(); };
-    player.setSource(&resampler);
     deviceManager.initialise(0, 2, nullptr, true); // may fail headless; playback is then silent
-    deviceManager.addAudioCallback(&callback);
+    deviceManager.addAudioCallback(&chain);
     rebuildSnapshot();
 }
 
 AppController::~AppController()
 {
-    deviceManager.removeAudioCallback(&callback);
-    player.setSource(nullptr);
+    deviceManager.removeAudioCallback(&chain);
     hist.onChange = nullptr;
 }
 
-void AppController::syncProjectRate()
-{
-    const auto r = hist.current().sampleRate;
-    if (std::abs(r - projectRate.load()) < 1e-9)
-        return;
-    projectRate.store(r);
-    // Re-runs audioDeviceAboutToStart: updates the resampling ratio and re-prepares the chain off the audio thread.
-    deviceManager.restartLastAudioDevice();
-}
+void AppController::syncProjectRate() { chain.setProjectRate(hist.current().sampleRate, deviceManager); }
 
 void AppController::rebuildSnapshot() { playback.setSnapshot(makeSnapshot(hist.current(), sources)); }
 

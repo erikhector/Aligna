@@ -151,9 +151,9 @@ TEST_CASE("PlaybackEngine seek during audio block is not lost", "[engine]")
         e.play();
         juce::Thread::sleep(1);
         e.pause();
-        e.setPosition(12345);
+        e.setPosition(12345 + i);
         juce::Thread::sleep(2); // let any in-flight block finish
-        if (e.getPosition() != 12345)
+        if (e.getPosition() != 12345 + i)
             ++lost;
     }
     run = false;
