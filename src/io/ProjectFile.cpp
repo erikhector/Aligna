@@ -217,7 +217,7 @@ std::optional<Project> loadProject(const juce::File& file, juce::String& error)
     auto unit = r.num(root, "beatUnit", {});
     if (r.failed()) return fail();
 
-    if (!(p.sampleRate > 0)) { error = "Invalid sampleRate: must be greater than 0"; return std::nullopt; }
+    if (!(p.sampleRate >= 8000 && p.sampleRate <= 384000)) { error = "Invalid sampleRate: must be between 8000 and 384000"; return std::nullopt; }
     if (!(p.bpm >= 20 && p.bpm <= 400)) { error = "Invalid bpm: must be between 20 and 400"; return std::nullopt; }
     if (!(bpb >= 1 && bpb <= 32 && !(std::floor(bpb) < bpb))) { error = "Invalid beatsPerBar: must be a whole number from 1 to 32"; return std::nullopt; }
     const int unitInt = (unit >= 1 && unit <= 16 && std::floor(unit) < unit + 0.5 && !(std::floor(unit) < unit)) ? static_cast<int>(unit) : 0;

@@ -13,4 +13,8 @@ SamplePos nudgeAmount(NudgeSize, const Project&, int subdivisionsPerBeat);
 
 struct BarBeat { int bar, beat; double tick; }; // bar/beat 1-based, tick in [0,1)
 BarBeat toBarBeat(SamplePos, const Project&);
+
+// Sets the time signature. Returns false (project untouched) if beatsPerBar is outside 1..32,
+// beatUnit is not 1/2/4/8/16, or the signature is unchanged.
+bool setTimeSignature(Project&, int beatsPerBar, int beatUnit);
 } // namespace aligna

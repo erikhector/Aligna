@@ -7,6 +7,16 @@
 
 namespace aligna
 {
+// A clip's placement when Align was pressed; used to detect that a result no longer fits the project.
+struct ClipAnchor
+{
+    juce::String clipId;
+    bool exists = false; // false: the clip was not found at capture time
+    int trackIndex = -1;
+    SamplePos start = 0, sourceOffset = 0, length = 0;
+};
+ClipAnchor captureAnchor(const Project&, const juce::String& clipId);
+
 // One result row of the auto-align dialog (one target clip).
 struct AlignRow
 {
@@ -15,7 +25,12 @@ struct AlignRow
     SamplePos oldStart = 0;
     std::optional<ClipAlignment> result; // empty when error is set
     juce::String error;
+    ClipAnchor anchor;                   // target clip placement when Align was pressed
 };
+
+// True if the reference or this row's target no longer matches its anchor (moved, trimmed, re-tracked,
+// deleted, or never found): the result's absolute start cannot be applied safely.
+bool isStale(const Project&, const ClipAnchor& reference, const AlignRow&);
 
 bool shouldPreTick(const AlignRow&);                          // confident and no error
 SamplePos offsetSamples(const AlignRow&);                     // newStart - oldStart (0 without a result)

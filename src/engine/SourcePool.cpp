@@ -1,6 +1,7 @@
 #include "engine/SourcePool.h"
 #include <juce_dsp/juce_dsp.h>
 #include <cmath>
+#include <new>
 
 namespace aligna
 {
@@ -38,6 +39,19 @@ std::vector<float> resampleChannel(const float* in, juce::int64 inLen, juce::int
 SourcePool::SourcePool() { formats.registerBasicFormats(); }
 
 AudioData SourcePool::decode(const juce::File& file, double projectRate, juce::String& error)
+{
+    try
+    {
+        return decodeImpl(file, projectRate, error);
+    }
+    catch (const std::bad_alloc&)
+    {
+        error = "Not enough memory to load this file";
+        return nullptr;
+    }
+}
+
+AudioData SourcePool::decodeImpl(const juce::File& file, double projectRate, juce::String& error)
 {
     if (! file.existsAsFile())
     {

@@ -82,6 +82,9 @@ void MainComponent::projectChanged()
         tlState.alignReferenceClipId = {};
 
     timeline.projectChanged();
+    if (alignWindow != nullptr)
+        if (auto* dlg = dynamic_cast<AlignDialog*>(alignWindow->getContentComponent()))
+            dlg->projectChanged();
     menuItemsChanged(); // Undo/Redo names
     layoutHeaders();
     repaint();
@@ -328,6 +331,7 @@ void MainComponent::doNew()
                                return;
                            const double rate = w->getComboBoxComponent("rate")->getSelectedItemIndex() == 0 ? 44100.0 : 48000.0;
                            safe->tlState.timeSelection.reset();
+                           safe->closeAlignDialog();
                            safe->app.newProject(rate);
                            safe->timeline.grabKeyboardFocus();
                        }),
@@ -347,6 +351,7 @@ void MainComponent::doOpen()
                              {
                                  juce::String err;
                                  safe->tlState.timeSelection.reset();
+                                 safe->closeAlignDialog();
                                  if (! safe->app.openProject(f, err))
                                      juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon,
                                                                             "Could not open project", err);

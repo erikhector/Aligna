@@ -18,6 +18,7 @@ public:
     ~AlignDialog() override;
 
     void stopWork(); // cancel and join the worker (also done by the destructor)
+    void projectChanged(); // call after any project change: marks results that no longer fit as stale
     void resized() override;
     void paint(juce::Graphics&) override;
 
@@ -32,6 +33,8 @@ private:
     void rowArrived(int token, AlignRow);
     void workFinished(int token, bool cancelled);
     void updateButtons();
+    bool rowStale(size_t row) const;
+    void refreshStale();
     void timerCallback() override;
 
     // ListBoxModel
@@ -50,6 +53,8 @@ private:
     double rate = 48000.0;
     std::vector<AlignRow> rows;
     std::vector<bool> ticked;
+    ClipAnchor refAnchor;       // reference placement when Align was pressed
+    bool showedStale = false;
     std::atomic<float> progressValue { 0.0f };
     double progressShown = 0.0;
 

@@ -167,8 +167,40 @@ void AlignDialog::updateButtons()
     cancelButton.setButtonText(running ? "Cancel" : "Close");
     bool any = false;
     for (size_t i = 0; i < rows.size(); ++i)
-        any = any || (ticked[i] && rows[i].error.isEmpty());
+        any = any || (ticked[i] && rows[i].error.isEmpty() && ! rowStale(i));
     applyButton.setEnabled(phase == Phase::Done && any);
+}
+
+bool AlignDialog::rowStale(size_t i) const
+{
+    return i < rows.size() && rows[i].result && isStale(app.history().current(), refAnchor, rows[i]);
+}
+
+void AlignDialog::projectChanged() { refreshStale(); }
+
+void AlignDialog::refreshStale()
+{
+    bool any = false;
+    for (size_t i = 0; i < rows.size(); ++i)
+        if (rowStale(i))
+        {
+            any = true;
+            ticked[i] = false;
+        }
+    list.updateContent();
+    list.repaint();
+    if (any && phase != Phase::Running)
+    {
+        statusLabel.setText("Project changed " + juce::String(juce::CharPointer_UTF8("\xe2\x80\x94")) + " press Align again.",
+                            juce::dontSendNotification);
+        showedStale = true;
+    }
+    else if (! any && showedStale && phase == Phase::Done)
+    {
+        statusLabel.setText("Done. Tick the clips to move, then Apply.", juce::dontSendNotification);
+        showedStale = false;
+    }
+    updateButtons();
 }
 
 void AlignDialog::startAlign()
@@ -180,6 +212,8 @@ void AlignDialog::startAlign()
     rate = proj.sampleRate;
     rows.clear();
     ticked.clear();
+    showedStale = false;
+    refAnchor = captureAnchor(proj, referenceId);
     for (auto& id : targets) // labels / old starts from the project the snapshot is taken from
         for (auto& t : proj.tracks)
             for (size_t ci = 0; ci < t.clips.size(); ++ci)
@@ -189,6 +223,7 @@ void AlignDialog::startAlign()
                     r.clipId = id;
                     r.label = t.name + " #" + juce::String((int) ci + 1);
                     r.oldStart = t.clips[ci].start;
+                    r.anchor = captureAnchor(proj, id);
                     rows.push_back(r);
                 }
     std::vector<AlignRow> todo = rows;
@@ -233,6 +268,8 @@ void AlignDialog::rowArrived(int token, AlignRow r)
         return;
     ticked.push_back(shouldPreTick(r));
     rows.push_back(std::move(r));
+    if (rowStale(rows.size() - 1)) // project changed while aligning
+        ticked.back() = false;
     list.updateContent();
     list.repaint();
 }
@@ -252,7 +289,8 @@ void AlignDialog::workFinished(int token, bool cancelled)
     cancelButton.setEnabled(true);
     statusLabel.setText(cancelled ? "Cancelled." : "Done. Tick the clips to move, then Apply.",
                         juce::dontSendNotification);
-    updateButtons();
+    showedStale = false;
+    refreshStale();
 }
 
 juce::Component* AlignDialog::refreshComponentForRow(int row, bool, juce::Component* existing)
@@ -269,14 +307,17 @@ juce::Component* AlignDialog::refreshComponentForRow(int row, bool, juce::Compon
     else
         holder.release();
     const auto& r = rows[(size_t) row];
-    rc->text.setText(describeRow(r, rate), juce::dontSendNotification);
-    const bool ok = r.error.isEmpty();
+    const bool stale = rowStale((size_t) row);
+    rc->text.setText(describeRow(r, rate) + (stale ? " (stale)" : ""), juce::dontSendNotification);
+    const bool ok = r.error.isEmpty() && ! stale;
     rc->text.setColour(juce::Label::textColourId,
                        ! ok ? juce::Colour(0xffef5350)
                             : (r.result && r.result->confidence < kConfidentThreshold ? juce::Colour(0xffffb74d)
                                                                                       : juce::Colours::white));
     rc->tick.setEnabled(ok);
     rc->tick.setToggleState(ok && ticked[(size_t) row], juce::dontSendNotification);
+    if (stale)
+        rc->text.setColour(juce::Label::textColourId, juce::Colour(0xff9e9e9e));
     rc->tick.onClick = [this, row, rc] {
         if (row < (int) ticked.size())
         {
@@ -291,7 +332,7 @@ void AlignDialog::applyPressed()
 {
     std::vector<std::pair<juce::String, SamplePos>> moves;
     for (size_t i = 0; i < rows.size(); ++i)
-        if (ticked[i] && rows[i].error.isEmpty() && rows[i].result)
+        if (ticked[i] && rows[i].error.isEmpty() && rows[i].result && ! rowStale(i))
             moves.emplace_back(rows[i].clipId, rows[i].result->newStart);
     if (! moves.empty())
         app.history().perform("Auto-align", [&](Project& p) { return applyAlignments(p, moves); });

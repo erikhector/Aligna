@@ -50,3 +50,18 @@ BarBeat toBarBeat(SamplePos pos, const Project& p)
     return r;
 }
 } // namespace aligna
+
+namespace aligna
+{
+bool setTimeSignature(Project& p, int beatsPerBar, int beatUnit)
+{
+    const bool unitOk = beatUnit == 1 || beatUnit == 2 || beatUnit == 4 || beatUnit == 8 || beatUnit == 16;
+    if (beatsPerBar < 1 || beatsPerBar > 32 || ! unitOk)
+        return false;
+    if (p.beatsPerBar == beatsPerBar && p.beatUnit == beatUnit)
+        return false;
+    p.beatsPerBar = beatsPerBar;
+    p.beatUnit = beatUnit;
+    return true;
+}
+} // namespace aligna

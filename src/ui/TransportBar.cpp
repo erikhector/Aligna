@@ -18,7 +18,8 @@ juce::String formatPosition(SamplePos pos, const Project& p)
 TransportBar::TransportBar(AppController& a, TimelineState& st) : app(a), tlState(st)
 {
     for (auto* c : std::initializer_list<juce::Component*> { &playButton, &stopButton, &audioButton,
-                                                              &position, &bpmLabel, &bpmField, &snapButton, &gridBox })
+                                                              &position, &bpmLabel, &bpmField, &snapButton, &gridBox,
+                                                              &sigLabel, &beatsBox, &slashLabel, &unitBox })
     {
         addAndMakeVisible(*c);
         c->setWantsKeyboardFocus(false);
@@ -46,6 +47,15 @@ TransportBar::TransportBar(AppController& a, TimelineState& st) : app(a), tlStat
         static const int subs[] = { 0, 1, 2, 4 };
         tlState.subdivisionsPerBeat = subs[juce::jlimit(1, 4, gridBox.getSelectedId()) - 1];
     };
+    slashLabel.setJustificationType(juce::Justification::centred);
+    for (int n = 1; n <= 32; ++n)
+        beatsBox.addItem(juce::String(n), n);
+    for (int u : { 1, 2, 4, 8, 16 })
+        unitBox.addItem(juce::String(u), u);
+    beatsBox.setTooltip("Beats per bar");
+    unitBox.setTooltip("Beat unit (note value that gets one beat)");
+    beatsBox.onChange = [this] { commitTimeSignature(); };
+    unitBox.onChange = [this] { commitTimeSignature(); };
     playButton.onClick = [this] { togglePlay(); };
     stopButton.onClick = [this] { app.engine().stop(); refresh(); };
     audioButton.onClick = [this] { showAudioSettings(); };
@@ -70,6 +80,11 @@ void TransportBar::refresh()
     position.setText(formatPosition(app.engine().getPosition(), p), juce::dontSendNotification);
     snapButton.setToggleState(tlState.snapEnabled, juce::dontSendNotification); // G key toggles it too
     playButton.setButtonText(app.engine().isPlaying() ? "Pause" : "Play");
+    // Follows the project (undo / open). Skipped while a menu is open so a popup is not disturbed.
+    if (! beatsBox.isPopupActive() && beatsBox.getSelectedId() != p.beatsPerBar)
+        beatsBox.setSelectedId(p.beatsPerBar, juce::dontSendNotification);
+    if (! unitBox.isPopupActive() && unitBox.getSelectedId() != p.beatUnit)
+        unitBox.setSelectedId(p.beatUnit, juce::dontSendNotification);
     if (!bpmField.hasKeyboardFocus(false))
         bpmField.setText(juce::String(p.bpm, 2).trimCharactersAtEnd("0").trimCharactersAtEnd("."),
                          juce::dontSendNotification);
@@ -81,6 +96,13 @@ void TransportBar::commitBpm()
     if (std::abs(v - app.history().current().bpm) > 1e-9)
         app.history().perform("Set BPM", [v](Project& p) { p.bpm = v; return true; });
     bpmField.setText(juce::String(v, 2).trimCharactersAtEnd("0").trimCharactersAtEnd("."), juce::dontSendNotification);
+}
+
+void TransportBar::commitTimeSignature()
+{
+    const int bpb = beatsBox.getSelectedId(), unit = unitBox.getSelectedId();
+    app.history().perform("Set Time Signature", [bpb, unit](Project& p) { return setTimeSignature(p, bpb, unit); });
+    refresh(); // snaps the boxes back to the project if the edit was rejected
 }
 
 namespace
@@ -139,6 +161,11 @@ void TransportBar::resized()
     gridBox.setBounds(r.removeFromLeft(80));
     r.removeFromLeft(12);
     audioButton.setBounds(r.removeFromRight(150));
+    r.removeFromRight(12);
+    unitBox.setBounds(r.removeFromRight(56));
+    slashLabel.setBounds(r.removeFromRight(14));
+    beatsBox.setBounds(r.removeFromRight(56));
+    sigLabel.setBounds(r.removeFromRight(40));
     r.removeFromRight(12);
     bpmField.setBounds(r.removeFromRight(60));
     bpmLabel.setBounds(r.removeFromRight(40));

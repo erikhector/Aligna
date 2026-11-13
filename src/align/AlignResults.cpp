@@ -4,6 +4,41 @@
 
 namespace aligna
 {
+ClipAnchor captureAnchor(const Project& p, const juce::String& clipId)
+{
+    ClipAnchor a;
+    a.clipId = clipId;
+    for (size_t ti = 0; ti < p.tracks.size(); ++ti)
+        for (auto& c : p.tracks[ti].clips)
+            if (c.id == clipId)
+            {
+                a.exists = true;
+                a.trackIndex = (int) ti;
+                a.start = c.start;
+                a.sourceOffset = c.sourceOffset;
+                a.length = c.length;
+                return a;
+            }
+    return a;
+}
+
+namespace
+{
+bool anchorMatches(const Project& p, const ClipAnchor& a)
+{
+    if (! a.exists)
+        return false;
+    const auto now = captureAnchor(p, a.clipId);
+    return now.exists && now.trackIndex == a.trackIndex && now.start == a.start && now.sourceOffset == a.sourceOffset
+           && now.length == a.length;
+}
+} // namespace
+
+bool isStale(const Project& p, const ClipAnchor& reference, const AlignRow& row)
+{
+    return ! anchorMatches(p, row.anchor) || ! anchorMatches(p, reference);
+}
+
 bool shouldPreTick(const AlignRow& r)
 {
     return r.error.isEmpty() && r.result && r.result->confidence >= kConfidentThreshold;

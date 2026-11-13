@@ -57,3 +57,27 @@ TEST_CASE("toBarBeat")
     REQUIRE(c.beat == 1);
     REQUIRE(c.tick == Approx(0.0));
 }
+
+TEST_CASE("setTimeSignature validates and reports change")
+{
+    Project p;
+    REQUIRE(setTimeSignature(p, 3, 4));
+    REQUIRE(p.beatsPerBar == 3);
+    REQUIRE(p.beatUnit == 4);
+    REQUIRE_FALSE(setTimeSignature(p, 3, 4)); // unchanged
+    REQUIRE(setTimeSignature(p, 7, 8));
+    REQUIRE(p.beatsPerBar == 7);
+    REQUIRE(p.beatUnit == 8);
+    for (int unit : { 1, 2, 4, 8, 16 })
+        REQUIRE(setTimeSignature(p, 2, unit));
+    REQUIRE(setTimeSignature(p, 32, 16));
+    REQUIRE(setTimeSignature(p, 1, 1));
+    // Invalid input leaves the project untouched.
+    REQUIRE_FALSE(setTimeSignature(p, 0, 4));
+    REQUIRE_FALSE(setTimeSignature(p, 33, 4));
+    REQUIRE_FALSE(setTimeSignature(p, 4, 3));
+    REQUIRE_FALSE(setTimeSignature(p, 4, 32));
+    REQUIRE_FALSE(setTimeSignature(p, 4, 0));
+    REQUIRE(p.beatsPerBar == 1);
+    REQUIRE(p.beatUnit == 1);
+}

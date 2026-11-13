@@ -217,6 +217,18 @@ TEST_CASE("load validation", "[projectfile]")
         writeText(f, baseJson().replace("\"sampleRate\":48000", "\"sampleRate\":0"));
         CHECK_FALSE(loadProject(f, err).has_value());
         CHECK(err.contains("sampleRate"));
+        writeText(f, baseJson().replace("\"sampleRate\":48000", "\"sampleRate\":7999"));
+        CHECK_FALSE(loadProject(f, err).has_value());
+        CHECK(err.contains("sampleRate"));
+        writeText(f, baseJson().replace("\"sampleRate\":48000", "\"sampleRate\":384001"));
+        CHECK_FALSE(loadProject(f, err).has_value());
+        CHECK(err.contains("sampleRate"));
+        writeText(f, baseJson().replace("\"sampleRate\":48000", "\"sampleRate\":1e300"));
+        CHECK_FALSE(loadProject(f, err).has_value());
+        writeText(f, baseJson().replace("\"sampleRate\":48000", "\"sampleRate\":8000"));
+        CHECK(loadProject(f, err).has_value());
+        writeText(f, baseJson().replace("\"sampleRate\":48000", "\"sampleRate\":384000"));
+        CHECK(loadProject(f, err).has_value());
     }
     SECTION("unknown source reference")
     {

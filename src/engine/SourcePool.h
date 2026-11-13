@@ -22,7 +22,8 @@ public:
     void clear();
 
 private:
-    AudioData decode(const juce::File& file, double projectRate, juce::String& error);
+    AudioData decode(const juce::File& file, double projectRate, juce::String& error); // catches bad_alloc
+    AudioData decodeImpl(const juce::File& file, double projectRate, juce::String& error);
 
     juce::AudioFormatManager formats;
     std::map<juce::String, AudioData> buffers;

@@ -20,6 +20,7 @@ public:
 private:
     void timerCallback() override { refresh(); }
     void commitBpm();
+    void commitTimeSignature();
     void showAudioSettings();
 
     AppController& app;
@@ -30,6 +31,8 @@ private:
     juce::TextButton playButton { "Play" }, stopButton { "Stop" }, audioButton { "Audio settings..." };
     juce::Label position, bpmLabel { {}, "BPM" };
     juce::TextEditor bpmField;
+    juce::ComboBox beatsBox, unitBox;
+    juce::Label sigLabel { {}, "Time" }, slashLabel { {}, "/" };
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(TransportBar)
 };
 } // namespace aligna

@@ -93,3 +93,71 @@ TEST_CASE("applyAlignments moves clips and skips missing ones", "[alignresults]"
     REQUIRE_FALSE(applyAlignments(p, { { "gone", 1 } }));
     REQUIRE_FALSE(applyAlignments(p, { { "c1", 500 } })); // no change
 }
+
+TEST_CASE("stale detection", "[alignresults]")
+{
+    auto p = twoClips(); // reference c0 on track 0, target c1 on track 1
+    AlignRow r;
+    r.clipId = "c1";
+    r.anchor = captureAnchor(p, "c1");
+    const auto ref = captureAnchor(p, "c0");
+    REQUIRE(ref.exists);
+    REQUIRE(ref.trackIndex == 0);
+    REQUIRE(r.anchor.trackIndex == 1);
+
+    SECTION("unchanged project is fresh")
+    {
+        REQUIRE_FALSE(isStale(p, ref, r));
+        REQUIRE_FALSE(isStale(Project(p), ref, r));
+    }
+    SECTION("moved reference")
+    {
+        p.tracks[0].clips[0].start += 10;
+        REQUIRE(isStale(p, ref, r));
+    }
+    SECTION("trimmed reference")
+    {
+        p.tracks[0].clips[0].sourceOffset += 5;
+        p.tracks[0].clips[0].length -= 5;
+        REQUIRE(isStale(p, ref, r));
+    }
+    SECTION("moved target")
+    {
+        p.tracks[1].clips[0].start += 1;
+        REQUIRE(isStale(p, ref, r));
+    }
+    SECTION("target moved to another track")
+    {
+        auto c = p.tracks[1].clips[0];
+        p.tracks[1].clips.clear();
+        p.tracks[0].clips.push_back(c);
+        REQUIRE(isStale(p, ref, r));
+    }
+    SECTION("unrelated clip moved or added")
+    {
+        Clip extra = p.tracks[0].clips[0];
+        extra.id = "other";
+        extra.start = 99999;
+        p.tracks[1].clips.push_back(extra);
+        p.tracks[1].clips.back().start += 7;
+        REQUIRE_FALSE(isStale(p, ref, r));
+    }
+    SECTION("deleted target")
+    {
+        p.tracks[1].clips.clear();
+        REQUIRE(isStale(p, ref, r));
+    }
+    SECTION("deleted reference")
+    {
+        p.tracks[0].clips.clear();
+        REQUIRE(isStale(p, ref, r));
+    }
+    SECTION("missing at capture time is always stale")
+    {
+        AlignRow g;
+        g.clipId = "nope";
+        g.anchor = captureAnchor(p, "nope");
+        REQUIRE_FALSE(g.anchor.exists);
+        REQUIRE(isStale(p, ref, g));
+    }
+}
