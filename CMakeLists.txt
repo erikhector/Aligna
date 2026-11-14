@@ -64,6 +64,7 @@ target_sources(aligna_core PRIVATE
   src/edit/EditHistory.cpp
   src/io/ProjectFile.cpp
   src/io/FileNaming.cpp
+  src/io/TakeFiles.cpp
   src/io/Mp3Encoder.cpp
   src/engine/Mixer.cpp
   src/engine/PlaybackChain.cpp
@@ -172,6 +173,7 @@ add_executable(aligna_tests
   tests/AlignTest.cpp
   tests/AlignResultsTest.cpp
   tests/FileNamingTest.cpp
+  tests/TakeFilesTest.cpp
   tests/StretcherTest.cpp
   tests/StretchOpsTest.cpp
   tests/StretchCacheTest.cpp
