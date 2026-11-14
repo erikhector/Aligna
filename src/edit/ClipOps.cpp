@@ -64,6 +64,16 @@ juce::String addTrackWithClip(Project& p, const SourceInfo& src, const juce::Str
     return c.id;
 }
 
+juce::String addTakeTrack(Project& p, const SourceInfo& src, const juce::String& trackName, const TakePlacement& tp)
+{
+    auto id = addTrackWithClip(p, src, trackName);
+    auto* c = findClip(p, id);
+    c->start = tp.start;
+    c->sourceOffset = tp.sourceOffset;
+    c->length = tp.length;
+    return id;
+}
+
 bool moveClip(Project& p, const juce::String& clipId, SamplePos newStart, int newTrackIndex)
 {
     if (newTrackIndex < 0 || newTrackIndex >= (int) p.tracks.size())

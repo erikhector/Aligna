@@ -132,3 +132,53 @@ TEST_CASE("EditHistory reset clears and is clean", "[EditHistory]")
     CHECK_FALSE(h.isDirty());
     CHECK((h.current().bpm > 89.0 && h.current().bpm < 91.0));
 }
+
+TEST_CASE("EditHistory locked history refuses edits", "[EditHistory]")
+{
+    Fx f;
+    EditHistory h(f.p);
+    REQUIRE(h.perform("Bump", bump));
+    double bpm = h.current().bpm;
+    h.setLocked(true);
+    CHECK(h.isLocked());
+    CHECK_FALSE(h.perform("Bump", bump));
+    CHECK(h.current().bpm == bpm);
+    CHECK_FALSE(h.undo());
+    h.setLocked(false);
+    CHECK(h.undo());
+}
+
+TEST_CASE("EditHistory rewriteAllStates touches every state", "[EditHistory]")
+{
+    Fx f;
+    EditHistory h(f.p);
+    for (int i = 0; i < 2; ++i)
+        REQUIRE(h.perform("Import", [i](Project& p) {
+            SourceInfo s;
+            s.id = "s" + juce::String(i);
+            s.path = "/tmp/a.wav";
+            p.sources.push_back(s);
+            return true;
+        }));
+    bool dirty = h.isDirty();
+    int changes = 0;
+    h.onChange = [&] { ++changes; };
+    h.rewriteAllStates([](Project& p) {
+        for (auto& s : p.sources)
+            if (s.path == "/tmp/a.wav")
+                s.path = "/x/a.wav";
+    });
+    CHECK(changes == 0);
+    CHECK(h.isDirty() == dirty);
+    auto count = [&] {
+        int n = 0;
+        for (auto& s : h.current().sources)
+            n += s.path == "/x/a.wav";
+        return n;
+    };
+    CHECK(count() == 2);
+    h.undo();
+    CHECK(count() == 1);
+    h.redo();
+    CHECK(count() == 2);
+}

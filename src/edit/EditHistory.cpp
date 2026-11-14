@@ -15,6 +15,8 @@ void EditHistory::notify() const
 
 bool EditHistory::perform(const juce::String& name, const std::function<bool(Project&)>& edit)
 {
+    if (locked)
+        return false;
     Project copy = states[cur].state;
     if (!edit(copy))
         return false;
@@ -38,7 +40,7 @@ bool EditHistory::perform(const juce::String& name, const std::function<bool(Pro
 
 bool EditHistory::undo()
 {
-    if (!canUndo())
+    if (locked || !canUndo())
         return false;
     --cur;
     notify();
@@ -47,7 +49,7 @@ bool EditHistory::undo()
 
 bool EditHistory::redo()
 {
-    if (!canRedo())
+    if (locked || !canRedo())
         return false;
     ++cur;
     notify();
@@ -67,6 +69,12 @@ void EditHistory::reset(Project p)
     cur = 0;
     savedIndex = 0;
     notify();
+}
+
+void EditHistory::rewriteAllStates(const std::function<void(Project&)>& fn)
+{
+    for (auto& e : states)
+        fn(e.state);
 }
 
 bool EditHistory::isDirty() const { return savedIndex != (long long) cur; }
