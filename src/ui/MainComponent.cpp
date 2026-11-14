@@ -112,13 +112,29 @@ void MainComponent::layoutHeaders()
                               TimelineView::trackHeight);
 }
 
+namespace
+{
+// Native file choosers are not modal everywhere (on Linux the main window stays live), so a recording can have started
+// by the time one returns. Its callback asks here before acting.
+bool refuseWhileRecording(const AppController& app, const juce::String& title, const juce::String& message)
+{
+    if (! app.isRecording())
+        return false;
+    juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon, title, message);
+    return true;
+}
+} // namespace
+
 void MainComponent::chooseImport()
 {
     chooser = std::make_unique<juce::FileChooser>("Import audio", juce::File(), "*.wav;*.aif;*.aiff;*.flac;*.mp3");
     chooser->launchAsync(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectMultipleItems
                              | juce::FileBrowserComponent::canSelectFiles,
                          [this](const juce::FileChooser& fc) {
-                             importAndReport(fc.getResults());
+                             const auto files = fc.getResults();
+                             if (! files.isEmpty()
+                                 && ! refuseWhileRecording(app, "Import problems", "Stop recording before importing audio."))
+                                 importAndReport(files);
                              timeline.grabKeyboardFocus();
                          });
 }
@@ -324,7 +340,8 @@ void MainComponent::saveAs(std::function<void()> proceed)
                              if (safe == nullptr)
                                  return;
                              auto f = fc.getResult();
-                             if (f != juce::File())
+                             if (f != juce::File()
+                                 && ! refuseWhileRecording(safe->app, "Could not save project", "Stop recording before saving."))
                              {
                                  const auto target = f.getParentDirectory().getChildFile(withExtension(f.getFileName(), ".aligna"));
                                  safe->confirmOverwrite(f, target, [safe, target, proceed] {
@@ -373,6 +390,7 @@ void MainComponent::doNew()
                            const double rate = w->getComboBoxComponent("rate")->getSelectedItemIndex() == 0 ? 44100.0 : 48000.0;
                            safe->tlState.timeSelection.reset();
                            safe->closeAlignDialog();
+                           safe->timeline.closeClipTempo();
                            safe->app.newProject(rate);
                            safe->timeline.grabKeyboardFocus();
                        }),
@@ -383,34 +401,52 @@ void MainComponent::doOpen()
 {
     chooser = std::make_unique<juce::FileChooser>("Open project", app.currentFile(), "*.aligna");
     juce::Component::SafePointer<MainComponent> safe(this);
+    // Dirty here means the user has just chosen "Don't Save" for these changes.
+    const bool discardConfirmed = app.history().isDirty();
     chooser->launchAsync(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
-                         [safe](const juce::FileChooser& fc) {
+                         [safe, discardConfirmed](const juce::FileChooser& fc) {
                              if (safe == nullptr)
                                  return;
                              const auto f = fc.getResult();
-                             if (f != juce::File())
+                             if (f != juce::File()
+                                 && ! refuseWhileRecording(safe->app, "Could not open project",
+                                                           "Stop recording before opening a project."))
                              {
-                                 juce::String err;
-                                 safe->tlState.timeSelection.reset();
-                                 safe->closeAlignDialog();
-                                 if (! safe->app.openProject(f, err))
-                                     juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon,
-                                                                            "Could not open project", err);
+                                 auto open = [safe, f] {
+                                     if (safe != nullptr)
+                                         safe->openFile(f);
+                                 };
+                                 // Edited while the chooser was up (it is not modal everywhere): ask before dropping that.
+                                 if (safe->app.history().isDirty() && ! discardConfirmed)
+                                     safe->confirmDiscard(open);
                                  else
-                                 {
-                                     std::vector<juce::String> missing;
-                                     for (auto& s : safe->app.history().current().sources)
-                                         if (s.missing)
-                                             missing.push_back(s.path);
-                                     if (! missing.empty())
-                                         juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon,
-                                                                                "Missing audio files",
-                                                                                missingFilesMessage(missing));
-                                 }
-                                 safe->updateTitle();
+                                     open();
                              }
                              safe->timeline.grabKeyboardFocus();
                          });
+}
+
+void MainComponent::openFile(const juce::File& f)
+{
+    if (refuseWhileRecording(app, "Could not open project", "Stop recording before opening a project."))
+        return;
+    juce::String err;
+    tlState.timeSelection.reset();
+    closeAlignDialog();
+    timeline.closeClipTempo();
+    if (! app.openProject(f, err))
+        juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon, "Could not open project", err);
+    else
+    {
+        std::vector<juce::String> missing;
+        for (auto& s : app.history().current().sources)
+            if (s.missing)
+                missing.push_back(s.path);
+        if (! missing.empty())
+            juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon, "Missing audio files",
+                                                   missingFilesMessage(missing));
+    }
+    updateTitle();
 }
 
 void MainComponent::doExport()
@@ -464,6 +500,12 @@ void MainComponent::doExport()
                                    if (safe == nullptr)
                                        return;
                                    auto f = fc.getResult();
+                                   if (f != juce::File()
+                                       && refuseWhileRecording(safe->app, "Export failed", "Stop recording before exporting."))
+                                   {
+                                       safe->timeline.grabKeyboardFocus();
+                                       return;
+                                   }
                                    if (f != juce::File())
                                    {
                                        const auto target = f.getParentDirectory().getChildFile(exportFileName(f.getFileName(), ext));

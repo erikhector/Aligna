@@ -15,6 +15,15 @@ juce::String formatPosition(SamplePos pos, const Project& p)
     const auto m = totalMs / 60000, s = (totalMs / 1000) % 60, ms = totalMs % 1000;
     return juce::String::formatted("%d|%d    %lld:%02lld.%03lld", bb.bar, bb.beat, m, s, ms);
 }
+
+// The tempo as the field shows it: two decimals, trailing zeros dropped.
+juce::String bpmText(double bpm) { return juce::String(bpm, 2).trimCharactersAtEnd("0").trimCharactersAtEnd("."); }
+
+// Digits with at most one decimal point and at least one digit ("" and "." are not numbers).
+bool isNumber(const juce::String& s)
+{
+    return s.containsAnyOf("0123456789") && s.containsOnly("0123456789.") && s.indexOfChar('.') == s.lastIndexOfChar('.');
+}
 } // namespace
 
 TransportBar::TransportBar(AppController& a, TimelineState& st) : app(a), tlState(st)
@@ -175,16 +184,21 @@ void TransportBar::refresh()
     if (! unitBox.isPopupActive() && unitBox.getSelectedId() != p.beatUnit)
         unitBox.setSelectedId(p.beatUnit, juce::dontSendNotification);
     if (!bpmField.hasKeyboardFocus(false))
-        bpmField.setText(juce::String(p.bpm, 2).trimCharactersAtEnd("0").trimCharactersAtEnd("."),
-                         juce::dontSendNotification);
+        bpmField.setText(bpmText(p.bpm), juce::dontSendNotification);
 }
 
 void TransportBar::commitBpm()
 {
-    const auto v = juce::jlimit(20.0, 400.0, bpmField.getText().getDoubleValue());
-    if (std::abs(v - app.history().current().bpm) > 1e-9)
-        app.history().perform("Tempo", [v](Project& p) { return setProjectBpm(p, v); });
-    bpmField.setText(juce::String(v, 2).trimCharactersAtEnd("0").trimCharactersAtEnd("."), juce::dontSendNotification);
+    // Also runs when the field merely loses focus, so it must not edit unless the user typed a different tempo:
+    // an empty field is not 20 BPM, and the field shows only two decimals of a tempo that may have more.
+    const auto text = bpmField.getText().trim();
+    if (isNumber(text))
+    {
+        const auto v = juce::jlimit(20.0, 400.0, text.getDoubleValue());
+        if (bpmText(v) != bpmText(app.history().current().bpm))
+            app.history().perform("Tempo", [v](Project& p) { return setProjectBpm(p, v); });
+    }
+    bpmField.setText(bpmText(app.history().current().bpm), juce::dontSendNotification); // the project's, also if refused
 }
 
 void TransportBar::commitTimeSignature()

@@ -18,6 +18,32 @@ int toPixelClamped(double x, int width)
     return (int) std::lround(std::clamp(x, -16.0, (double) width + 16.0));
 }
 
+float toCoordClamped(double x, int width)
+{
+    if (std::isnan(x))
+        return 0.0f;
+    return (float) std::clamp(x, -16.0, (double) width + 16.0);
+}
+
+bool clipLineToWidth(double xa, double ya, double xb, double yb, int width, juce::Line<float>& out)
+{
+    if (std::isnan(xa) || std::isnan(xb))
+        return false;
+    const double lo = -16.0, hi = (double) width + 16.0;
+    if (std::max(xa, xb) < lo || std::min(xa, xb) > hi)
+        return false;
+    // y on the segment at x. Only evaluated where an end was moved, which implies xa != xb.
+    auto yAt = [&](double x) { return ya + (yb - ya) * ((x - xa) / (xb - xa)); };
+    auto cut = [&](double x, double y) {
+        if (x >= lo && x <= hi)
+            return juce::Point<float>((float) x, (float) y);
+        const double cx = std::clamp(x, lo, hi);
+        return juce::Point<float>((float) cx, (float) yAt(cx));
+    };
+    out = { cut(xa, ya), cut(xb, yb) };
+    return true;
+}
+
 Hit hitTest(const Project& proj, const TimelineMapping& m, int trackHeight, juce::Point<float> p)
 {
     Hit hit;

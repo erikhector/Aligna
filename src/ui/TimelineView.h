@@ -25,6 +25,8 @@ public:
         draggingRuler = selecting = false;
         tempoWindow.reset();
     }
+    // Closes the clip-tempo dialog (it edits a clip of the project being replaced on New / Open).
+    void closeClipTempo() { tempoWindow.reset(); }
     void projectChanged(); // call after the project/pool changed
     TimelineMapping& mapping() { return map; }
     int getViewY() const { return viewY; }
@@ -107,6 +109,7 @@ private:
     std::unique_ptr<juce::DialogWindow> tempoWindow;
     double mouseX = -1, mouseY = -1;
     double lastPlayheadX = -1;
+    std::optional<double> lastTakeX; // right edge of the take bar at the last timer tick; empty when not recording
     bool draggingRuler = false, selecting = false;
     SamplePos selectAnchor = 0;
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(TimelineView)
