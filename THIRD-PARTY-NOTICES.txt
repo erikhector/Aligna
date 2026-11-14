@@ -1,0 +1,30 @@
+Aligna third-party notices
+==========================
+
+Aligna is licensed under the GNU AGPL-3.0 (file: LICENSE).
+Full Aligna source, including the build scripts, is available at
+https://github.com/erikhector/Aligna so that users can rebuild and relink it.
+
+Components
+----------
+
+1. JUCE 8 - AGPLv3 (used under its open-source terms).
+   https://juce.com/
+   License: see LICENSE (AGPL-3.0).
+
+2. Rubber Band Library v4.0.0 - GPL-2.0-or-later.
+   Copyright Particular Programs Ltd. https://breakfastquay.com/rubberband/
+   License text: LICENSE-RubberBand.txt
+
+3. LAME 3.100 - LGPL-2.0-or-later.
+   https://lame.sourceforge.io/
+   Statically linked into Aligna. Because the full Aligna source and build
+   scripts are public (URL above), you may modify LAME and relink Aligna.
+   License text: LICENSE-LAME.txt
+
+License files shipped with each release archive
+-----------------------------------------------
+LICENSE                  Aligna and JUCE (AGPL-3.0)
+LICENSE-LAME.txt         LAME (LGPL)
+LICENSE-RubberBand.txt   Rubber Band Library (GPL)
+THIRD-PARTY-NOTICES.txt  this file

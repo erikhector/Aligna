@@ -14,6 +14,14 @@ juce::String withExtension(const juce::String& name, const juce::String& ext)
     return name.endsWithIgnoreCase(e) ? name : name + e;
 }
 
+juce::String exportFileName(const juce::String& name, const juce::String& ext)
+{
+    for (const char* other : { ".wav", ".mp3" })
+        if (name.endsWithIgnoreCase(other) && ! name.endsWithIgnoreCase(ext))
+            return withExtension(name.dropLastCharacters(4), ext);
+    return withExtension(name, ext);
+}
+
 juce::String missingFilesMessage(const std::vector<juce::String>& paths)
 {
     if (paths.empty())

@@ -1,21 +1,30 @@
 #include "engine/Mixer.h"
+#include "io/Mp3Encoder.h"
 #include <cmath>
 
 namespace aligna
 {
-std::shared_ptr<const MixSnapshot> makeSnapshot(const Project& p, const SourcePool& pool)
+std::shared_ptr<const MixSnapshot> makeSnapshot(const Project& p, const SourcePool& pool, const StretchCache& cache)
 {
     auto snap = std::make_shared<MixSnapshot>();
     snap->project = p;
-    for (auto& t : snap->project.tracks)
+    snap->clipAudio.resize(snap->project.tracks.size());
+    for (size_t ti = 0; ti < snap->project.tracks.size(); ++ti)
+    {
+        auto& t = snap->project.tracks[ti];
         std::stable_sort(t.clips.begin(), t.clips.end(),
                          [](const Clip& a, const Clip& b) { return a.start < b.start; });
-    for (auto& s : snap->project.sources)
-    {
-        if (s.missing)
-            continue;
-        if (auto d = pool.get(s.id))
-            snap->audio[s.id] = d;
+        for (auto& c : t.clips)
+        {
+            AudioData d;
+            const auto* s = findSource(snap->project, c.sourceId);
+            const auto key = bufferKey(c);
+            if (s != nullptr && ! s->missing)
+                d = nearlyEqual(c.stretch, 1.0) ? pool.get(c.sourceId) : cache.get(key);
+            if (d != nullptr)
+                snap->audio[key] = d;
+            snap->clipAudio[ti].push_back(d.get()); // owned by snap->audio
+        }
     }
     return snap;
 }
@@ -26,18 +35,30 @@ struct TrackCtx
 {
     const MixSnapshot* snap;
     const Track* track;
+    const std::vector<const juce::AudioBuffer<float>*>* buffers; // resolved per clip, or nullptr
     float trackGain, pan;
     SamplePos blockStart;
     juce::AudioBuffer<float>* out;
     int offset;
 };
 
-void renderClipRange(const TrackCtx& c, const Clip& clip, SamplePos a, SamplePos b)
+// Allocation-free: never builds a key string on the audio thread.
+const juce::AudioBuffer<float>* clipBuffer(const TrackCtx& c, const Clip& clip, int idx)
 {
+    if (c.buffers != nullptr)
+        return (*c.buffers)[static_cast<size_t>(idx)];
+    if (! nearlyEqual(clip.stretch, 1.0))
+        return nullptr;
     auto it = c.snap->audio.find(clip.sourceId);
-    if (it == c.snap->audio.end() || it->second == nullptr)
+    return it == c.snap->audio.end() ? nullptr : it->second.get();
+}
+
+void renderClipRange(const TrackCtx& c, const Clip& clip, int idx, SamplePos a, SamplePos b)
+{
+    const auto* buf = clipBuffer(c, clip, idx);
+    if (buf == nullptr)
         return;
-    const auto& src = *it->second;
+    const auto& src = *buf;
     const int srcCh = src.getNumChannels();
     if (srcCh < 1)
         return;
@@ -105,7 +126,7 @@ void renderRange(const TrackCtx& c, int idx, SamplePos lo, SamplePos hi)
         const SamplePos b = juce::jmin(hi, clip.start + clip.length);
         if (a >= b)
             continue;
-        renderClipRange(c, clip, a, b);
+        renderClipRange(c, clip, idx, a, b);
         if (a > lo)
             renderRange(c, idx - 1, lo, a);
         lo = b; // right remainder handled by the loop
@@ -124,24 +145,27 @@ void renderMix(const MixSnapshot& snap, SamplePos start, juce::AudioBuffer<float
     for (auto& t : snap.project.tracks)
         anySolo = anySolo || t.solo;
 
-    for (auto& t : snap.project.tracks)
+    const bool resolved = snap.clipAudio.size() == snap.project.tracks.size();
+    for (size_t ti = 0; ti < snap.project.tracks.size(); ++ti)
     {
+        const auto& t = snap.project.tracks[ti];
         if (t.mute || (anySolo && !t.solo))
             continue;
-        TrackCtx c{ &snap, &t, juce::Decibels::decibelsToGain(t.volumeDb), juce::jlimit(-1.0f, 1.0f, t.pan),
+        const auto* buffers = resolved && snap.clipAudio[ti].size() == t.clips.size() ? &snap.clipAudio[ti] : nullptr;
+        TrackCtx c{ &snap, &t, buffers, juce::Decibels::decibelsToGain(t.volumeDb), juce::jlimit(-1.0f, 1.0f, t.pan),
                     start, &out, offset };
         renderRange(c, static_cast<int>(t.clips.size()) - 1, start, start + numSamples);
     }
 }
 
-bool exportMix(const MixSnapshot& snap, const juce::File& wav, int bitDepth, juce::String& error,
+juce::String extensionFor(ExportSettings::Format f)
+{
+    return f == ExportSettings::Format::Mp3 ? ".mp3" : ".wav";
+}
+
+bool exportMix(const MixSnapshot& snap, const juce::File& out, const ExportSettings& settings, juce::String& error,
                const std::function<bool(float)>& progress)
 {
-    if (bitDepth != 16 && bitDepth != 24)
-    {
-        error = "Unsupported bit depth";
-        return false;
-    }
     const auto total = projectEnd(snap.project);
     if (total <= 0)
     {
@@ -149,26 +173,43 @@ bool exportMix(const MixSnapshot& snap, const juce::File& wav, int bitDepth, juc
         return false;
     }
 
-    const auto tmp = wav.getSiblingFile(wav.getFileName() + ".tmp");
+    const auto tmp = out.getSiblingFile(out.getFileName() + ".tmp");
     tmp.deleteFile();
-    auto stream = std::make_unique<juce::FileOutputStream>(tmp);
-    if (stream->failedToOpen())
-    {
-        error = "Could not write " + wav.getFullPathName();
-        return false;
-    }
 
-    juce::WavAudioFormat fmt;
-    std::unique_ptr<juce::AudioFormatWriter> writer(
-        fmt.createWriterFor(stream.get(), snap.project.sampleRate, 2, bitDepth, {}, 0));
-    if (writer == nullptr)
+    const bool mp3 = settings.format == ExportSettings::Format::Mp3;
+    auto encoderPtr = std::make_unique<Mp3Encoder>();
+    auto& encoder = *encoderPtr;
+    std::unique_ptr<juce::AudioFormatWriter> writer;
+    if (mp3)
     {
-        stream.reset();
-        tmp.deleteFile();
-        error = "Could not create WAV writer";
-        return false;
+        if (! encoder.open(tmp, snap.project.sampleRate, settings.kbps, settings.title, error))
+        {
+            encoderPtr.reset();
+            tmp.deleteFile();
+            error = "Could not write " + out.getFullPathName();
+            return false;
+        }
     }
-    stream.release(); // owned by writer
+    else
+    {
+        auto stream = std::make_unique<juce::FileOutputStream>(tmp);
+        if (stream->failedToOpen())
+        {
+            error = "Could not write " + out.getFullPathName();
+            return false;
+        }
+        juce::WavAudioFormat fmt;
+        const int bits = settings.format == ExportSettings::Format::Wav16 ? 16 : 24;
+        writer.reset(fmt.createWriterFor(stream.get(), snap.project.sampleRate, 2, bits, {}, 0));
+        if (writer == nullptr)
+        {
+            stream.reset();
+            tmp.deleteFile();
+            error = "Could not create WAV writer";
+            return false;
+        }
+        stream.release(); // owned by writer
+    }
 
     constexpr int blockSize = 4096;
     juce::AudioBuffer<float> buf(2, blockSize);
@@ -178,9 +219,10 @@ bool exportMix(const MixSnapshot& snap, const juce::File& wav, int bitDepth, juc
         const int n = static_cast<int>(juce::jmin<SamplePos>(blockSize, total - pos));
         buf.clear();
         renderMix(snap, pos, buf, 0, n);
-        if (! writer->writeFromAudioSampleBuffer(buf, 0, n))
+        if (mp3 ? ! encoder.write(buf, n, error) : ! writer->writeFromAudioSampleBuffer(buf, 0, n))
         {
-            error = "Write failed";
+            if (! mp3)
+                error = "Write failed";
             ok = false;
             break;
         }
@@ -191,16 +233,19 @@ bool exportMix(const MixSnapshot& snap, const juce::File& wav, int bitDepth, juc
             break;
         }
     }
+    if (ok && mp3)
+        ok = encoder.finish(error);
     writer.reset(); // flush + close
+    encoderPtr.reset(); // release the file before deleting or moving it
     if (! ok)
     {
         tmp.deleteFile();
         return false;
     }
-    if (! tmp.moveFileTo(wav))
+    if (! tmp.moveFileTo(out))
     {
         tmp.deleteFile();
-        error = "Could not write " + wav.getFullPathName();
+        error = "Could not write " + out.getFullPathName();
         return false;
     }
     return true;

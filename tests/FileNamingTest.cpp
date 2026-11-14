@@ -22,6 +22,15 @@ TEST_CASE("withExtension appends only when missing")
     REQUIRE(withExtension("a", "wav") == "a.wav");
 }
 
+TEST_CASE("exportFileName swaps wav/mp3 extensions")
+{
+    REQUIRE(exportFileName("song.wav", ".mp3") == "song.mp3");
+    REQUIRE(exportFileName("song.MP3", ".wav") == "song.wav");
+    REQUIRE(exportFileName("song.mp3", ".mp3") == "song.mp3");
+    REQUIRE(exportFileName("song", ".mp3") == "song.mp3");
+    REQUIRE(exportFileName("a.b", ".wav") == "a.b.wav");
+}
+
 TEST_CASE("missing files message")
 {
     REQUIRE(missingFilesMessage({}).isEmpty());

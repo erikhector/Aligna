@@ -20,7 +20,7 @@ const Clip* findClipConst(const Project& p, const juce::String& id)
 std::vector<float> renderClipAlone(const MixSnapshot& s, const Clip& clip, SamplePos from, SamplePos n)
 {
     std::vector<float> out((size_t) std::max<SamplePos>(0, n), 0.0f);
-    const auto it = s.audio.find(clip.sourceId);
+    const auto it = s.audio.find(bufferKey(clip));
     if (it == s.audio.end() || it->second == nullptr)
         return out;
     const auto& buf = *it->second;
@@ -62,6 +62,18 @@ std::optional<ClipAlignment> computeAlignment(const MixSnapshot& s, const juce::
     {
         error = "Choose two different clips";
         return std::nullopt;
+    }
+    for (const Clip* c : { ref, tgt })
+    {
+        const auto* src = findSource(s.project, c->sourceId);
+        // A missing or unknown source is never rendered: it takes the same silent path as an unstretched one.
+        if (src == nullptr || src->missing)
+            continue;
+        if (! nearlyEqual(c->stretch, 1.0) && s.audio.count(bufferKey(*c)) == 0)
+        {
+            error = juce::String::fromUTF8("Clip is still stretching \xe2\x80\x94 try again in a moment");
+            return std::nullopt;
+        }
     }
 
     const double rate = s.project.sampleRate;

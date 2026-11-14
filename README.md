@@ -2,7 +2,7 @@
 
 Aligna is an open-source digital audio workstation (JUCE / C++20) focused on one job: **aligning audio tracks**.
 Import several recordings of the same performance, line them up on a timeline (by hand, with snapping and nudging,
-or automatically by cross-correlation), listen, and export a mixed WAV. Source audio files are never modified.
+or automatically by cross-correlation), listen, and export the mix as WAV or MP3. Source audio files are never modified.
 
 ## Features
 
@@ -12,7 +12,7 @@ or automatically by cross-correlation), listen, and export a mixed WAV. Source a
 - Auto-align: pick a reference clip and shift other clips to match it by cross-correlation (shifts only, never stretches; reports inverted polarity). You confirm before anything moves.
 - Undo/redo for every edit.
 - Projects are saved as `.aligna` JSON files (audio paths relative to the project when possible). If audio files have moved, the project still opens, the missing clips are shown in red and the rest plays.
-- Export the mix as a stereo WAV, 16- or 24-bit, at the project sample rate.
+- Export the mix as a stereo WAV (16- or 24-bit) or MP3 (192/256/320 kbps CBR; MP3 at the project rate (32/44.1/48 kHz), otherwise 44.1 kHz).
 
 ## Keyboard shortcuts
 
@@ -47,6 +47,15 @@ Use Cmd instead of Ctrl on macOS.
 - **Clip gain:** double-click a clip.
 - **Bypass snap:** hold Alt while dragging (the Snap button or G toggles snapping on and off).
 - **Time signature:** the two boxes next to BPM in the transport bar set beats per bar (1 to 32) and the beat unit (1, 2, 4, 8 or 16); each change is one undo step.
+
+### Stretching clips
+
+Aligna can change a clip's speed without changing its pitch (Rubber Band, offline quality; the source file is never touched).
+
+- **Drag-stretch:** hold Ctrl/Cmd and drag the right edge of a clip. The clip plays faster or slower so that it ends where you drop the edge; the label shows the ratio (for example "name ×1.50"). Snapping and Alt work as for trimming. One undo step ("Stretch"). The ratio stays between ×0.25 and ×4, and a stretched source is limited to 2 hours.
+- **Clip tempo:** right-click a clip and choose "Clip tempo...", then type the BPM the recording was played at, or press Tap a few times along with the music (it averages the last 8 taps and starts over after 2 s of silence). Press OK. The clip is now tied to the project BPM: it is stretched to fit, shown as "name 98→100 BPM", and follows when you change the BPM in the transport bar (every tempo clip is re-stretched, its start stays where it is, and one undo restores them all). If the ratio hits the limit, the dialog says so ("Limited to ×4.00"). Clear removes the tempo; the clip keeps its current stretch. Dragging the edge of a tempo clip makes it a plain stretched clip again.
+- **While it renders:** stretching is done in the background. A clip whose stretched audio is not ready yet is silent and shows "stretching..." and then updates by itself. Auto-align asks you to try again in a moment if a clip is still stretching.
+- Stretched audio is cached in memory only (about 2 GB at most) and is re-rendered when you open a project.
 
 ### Aligning two recordings
 
@@ -88,3 +97,9 @@ Release builds from CI are not code-signed.
 ## License
 
 AGPL-3.0, see [LICENSE](LICENSE) (JUCE 8 open-source terms).
+
+Time-stretching uses [Rubber Band Library](https://breakfastquay.com/rubberband/) (v4.0.0, R2 engine, GPL-2.0-or-later, copyright Particular Programs Ltd), built into Aligna from its single-file source; Aligna is distributed under terms compatible with it.
+
+MP3 encoding uses [LAME](https://lame.sourceforge.io/) 3.100 (LGPL-2.0-or-later, © the LAME project), built into Aligna from source.
+
+Release downloads include `LICENSE`, `LICENSE-LAME.txt`, `LICENSE-RubberBand.txt` and `THIRD-PARTY-NOTICES.txt`.

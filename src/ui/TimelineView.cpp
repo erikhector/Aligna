@@ -1,5 +1,7 @@
 #include "ui/TimelineView.h"
 #include "edit/ClipOps.h"
+#include "edit/StretchMath.h"
+#include "ui/ClipTempoDialog.h"
 #include "model/Grid.h"
 #include <algorithm>
 #include <cmath>
@@ -28,6 +30,29 @@ juce::String secondsLabel(double t)
         return juce::String(t, 2) + "s";
     return juce::String(t * 1000.0, t * 1000.0 < 10.0 ? 1 : 0) + "ms";
 }
+
+juce::String bpmText(double v) { return juce::String(v, 2).trimCharactersAtEnd("0").trimCharactersAtEnd("."); }
+
+// "name x1.02" for a stretched clip, "98->100 BPM" for a tempo clip; uses the ratio actually applied (after clamping).
+juce::String clipLabel(const juce::String& name, const Clip& c)
+{
+    if (c.sourceBpm > 0.0)
+        return name + " " + bpmText(c.sourceBpm) + juce::String::fromUTF8("\xe2\x86\x92") + bpmText(c.sourceBpm / c.stretch) + " BPM";
+    if (!nearlyEqual(c.stretch, 1.0))
+        return name + juce::String::fromUTF8(" \xc3\x97") + juce::String(c.stretch, 2);
+    return name;
+}
+
+class TempoWindow : public juce::DialogWindow
+{
+public:
+    TempoWindow(std::function<void()> closeFn)
+        : juce::DialogWindow("Clip tempo", juce::Colour(0xff26282c), true), onClose(std::move(closeFn)) {}
+    void closeButtonPressed() override { onClose(); }
+
+private:
+    std::function<void()> onClose;
+};
 } // namespace
 
 TimelineView::TimelineView(AppController& a, TimelineState& s) : app(a), state(s)
@@ -40,37 +65,47 @@ TimelineView::TimelineView(AppController& a, TimelineState& s) : app(a), state(s
 
 TimelineView::~TimelineView() { stopTimer(); }
 
+// Thumbnails are keyed by bufferKey(clip): the source id for unstretched clips, the stretched buffer otherwise.
 void TimelineView::syncThumbnails()
 {
     const auto& proj = app.history().current();
     std::set<juce::String> live;
-    for (auto& src : proj.sources)
-    {
-        live.insert(src.id);
-        auto data = app.pool().get(src.id);
-        auto it = thumbs.find(src.id);
+    auto ensure = [&](const juce::String& key, const AudioData& data) {
+        auto it = thumbs.find(key);
         if (!data || data->getNumSamples() == 0)
         {
             if (it != thumbs.end())
                 thumbs.erase(it);
-            continue;
+            return;
         }
+        live.insert(key);
         if (it != thumbs.end() && it->second.data == data)
-            continue;
+            return;
         Thumb t;
         t.data = data;
         t.thumb = std::make_unique<juce::AudioThumbnail>(64, formats, thumbCache);
         t.thumb->reset(data->getNumChannels(), proj.sampleRate, data->getNumSamples());
         t.thumb->addBlock(0, *data, 0, data->getNumSamples());
-        thumbs[src.id] = std::move(t);
-    }
+        thumbs[key] = std::move(t);
+    };
+    for (auto& src : proj.sources)
+        ensure(src.id, app.pool().get(src.id));
+    for (auto& t : proj.tracks)
+        for (auto& c : t.clips)
+            if (!nearlyEqual(c.stretch, 1.0))
+            {
+                const auto key = bufferKey(c);
+                ensure(key, app.stretchCache().get(key));
+            }
     for (auto it = thumbs.begin(); it != thumbs.end();)
         it = live.count(it->first) ? std::next(it) : thumbs.erase(it);
 }
 
 void TimelineView::projectChanged()
 {
-    cancelDrag(); // the history changed under an in-progress drag
+    // The history changed under an in-progress drag. A finished stretch render also lands here and must not kill it.
+    if (drag.mode != DragMode::None && !(dragBase && sameClips(*dragBase, app.history().current())))
+        cancelDrag();
     syncThumbnails();
     clampView();
     repaint();
@@ -171,6 +206,17 @@ void TimelineView::paint(juce::Graphics& g)
     {
         g.setColour(juce::Colours::white.withAlpha(0.3f));
         g.drawVerticalLine((int) mouseX, (float) rulerHeight, (float) getHeight());
+    }
+
+    if (drag.mode == DragMode::Stretch && drag.active && mouseY >= 0)
+    {
+        const auto text = juce::String::fromUTF8("\xe2\x86\x94 stretch");
+        const juce::Rectangle<int> box((int) mouseX + 14, (int) mouseY + 14, 74, 18);
+        g.setColour(juce::Colour(0xdd000000));
+        g.fillRoundedRectangle(box.toFloat(), 3.0f);
+        g.setColour(juce::Colours::white);
+        g.setFont(juce::FontOptions(12.0f));
+        g.drawText(text, box, juce::Justification::centred, false);
     }
 
     const double px = map.toX(app.engine().getPosition());
@@ -302,19 +348,24 @@ void TimelineView::paintTrack(juce::Graphics& g, const Track& track, int index, 
         const auto* src = findSource(proj, c.sourceId);
         const bool missing = src == nullptr || src->missing || app.pool().get(c.sourceId) == nullptr;
 
+        // A stretched clip whose buffer is not there (still rendering, or the render failed) is silent: say so.
+        const bool previewed = preview && drag.mode == DragMode::Stretch && c.id == drag.clipId;
+        const bool stretching = !missing && !previewed && !nearlyEqual(c.stretch, 1.0)
+                                && app.stretchCache().get(bufferKey(c)) == nullptr;
+
         for (int pass = 0; pass < 2; ++pass)
         {
             juce::Graphics::ScopedSaveState ss(g);
             g.reduceClipRegion(pass == 0 ? uncovered : covered);
             if (g.isClipEmpty())
                 continue;
-            paintClip(g, c, rect, clip, pass == 0 ? 1.0f : 0.4f, colour, missing);
+            paintClip(g, c, rect, clip, pass == 0 ? 1.0f : 0.4f, colour, missing, stretching);
         }
     }
 }
 
 void TimelineView::paintClip(juce::Graphics& g, const Clip& c, juce::Rectangle<int> r, juce::Rectangle<int> clip,
-                             float alpha, juce::Colour colour, bool missing)
+                             float alpha, juce::Colour colour, bool missing, bool stretching)
 {
     if (missing)
     {
@@ -329,6 +380,14 @@ void TimelineView::paintClip(juce::Graphics& g, const Clip& c, juce::Rectangle<i
         g.setColour(colour.darker(0.75f).withAlpha(0.9f * alpha));
         g.fillRect(r);
         paintWaveform(g, c, r, clip, alpha, colour);
+        if (stretching)
+        {
+            g.setColour(juce::Colours::black.withAlpha(0.5f * alpha));
+            g.fillRect(r);
+            g.setColour(juce::Colours::white.withAlpha(alpha));
+            g.setFont(juce::FontOptions(13.0f, juce::Font::bold));
+            g.drawText(juce::String::fromUTF8("stretching\xe2\x80\xa6"), r, juce::Justification::centred, true);
+        }
     }
 
     // Fades.
@@ -352,7 +411,7 @@ void TimelineView::paintClip(juce::Graphics& g, const Clip& c, juce::Rectangle<i
         {
             g.setColour(juce::Colours::white.withAlpha(0.85f * alpha));
             g.setFont(juce::FontOptions(11.0f));
-            g.drawText(juce::File(src->path).getFileName(), r.getX() + 4, r.getY() + 1, r.getWidth() - 8, 14,
+            g.drawText(clipLabel(juce::File(src->path).getFileName(), c), r.getX() + 4, r.getY() + 1, r.getWidth() - 8, 14,
                        juce::Justification::centredLeft, true);
         }
     }
@@ -361,9 +420,17 @@ void TimelineView::paintClip(juce::Graphics& g, const Clip& c, juce::Rectangle<i
 void TimelineView::paintWaveform(juce::Graphics& g, const Clip& c, juce::Rectangle<int> r, juce::Rectangle<int> clip,
                                  float alpha, juce::Colour colour)
 {
-    auto it = thumbs.find(c.sourceId);
+    // The clip's own buffer when it exists; otherwise the unstretched source drawn scaled to the clip (k = ratio).
+    double k = 1.0;
+    auto it = thumbs.find(bufferKey(c));
     if (it == thumbs.end())
+    {
+        it = thumbs.find(c.sourceId);
+        k = c.stretch;
+    }
+    if (it == thumbs.end() || !(k > 0.0))
         return;
+    const auto srcPos = [k](SamplePos stretchedPos) { return (SamplePos) std::llround((double) stretchedPos / k); };
     const auto& buf = *it->second.data;
     const int nch = buf.getNumChannels();
     const int vis0 = std::max({ r.getX(), clip.getX(), 0 }), vis1 = std::min({ r.getRight(), clip.getRight(), getWidth() });
@@ -382,8 +449,8 @@ void TimelineView::paintWaveform(juce::Graphics& g, const Clip& c, juce::Rectang
 
         if (spp >= thumbDirectBelow)
         {
-            const double t0 = (double) (c.sourceOffset + (map.toSample(vis0) - c.start)) / rate;
-            const double t1 = (double) (c.sourceOffset + (map.toSample(vis1) - c.start)) / rate;
+            const double t0 = (double) srcPos(c.sourceOffset + (map.toSample(vis0) - c.start)) / rate;
+            const double t1 = (double) srcPos(c.sourceOffset + (map.toSample(vis1) - c.start)) / rate;
             // drawChannel maps [t0,t1] onto the rectangle, so give it exactly the visible pixel span.
             it->second.thumb->drawChannel(g, { vis0, band.getY(), vis1 - vis0, band.getHeight() }, t0, t1, ch, 1.0f);
             continue;
@@ -396,8 +463,8 @@ void TimelineView::paintWaveform(juce::Graphics& g, const Clip& c, juce::Rectang
         {
             for (int x = vis0; x < vis1; ++x)
             {
-                SamplePos a = c.sourceOffset + (map.toSample(x) - c.start);
-                SamplePos b = c.sourceOffset + (map.toSample(x + 1) - c.start);
+                SamplePos a = srcPos(c.sourceOffset + (map.toSample(x) - c.start));
+                SamplePos b = srcPos(c.sourceOffset + (map.toSample(x + 1) - c.start));
                 a = std::clamp<SamplePos>(a, 0, len);
                 b = std::clamp<SamplePos>(std::max(b, a + 1), 0, len);
                 if (b <= a)
@@ -414,13 +481,14 @@ void TimelineView::paintWaveform(juce::Graphics& g, const Clip& c, juce::Rectang
         else
         {
             // Sub-pixel zoom: sample values as points joined by lines.
-            const SamplePos sA = std::max<SamplePos>(0, c.sourceOffset + (map.toSample(vis0) - c.start) - 1);
-            const SamplePos sB = std::min<SamplePos>(std::min(len, c.sourceOffset + c.length), c.sourceOffset + (map.toSample(vis1) - c.start) + 2);
+            const SamplePos sA = std::max<SamplePos>(0, srcPos(c.sourceOffset + (map.toSample(vis0) - c.start)) - 1);
+            const SamplePos sB = std::min<SamplePos>(std::min(len, srcPos(c.sourceOffset + c.length)),
+                                                     srcPos(c.sourceOffset + (map.toSample(vis1) - c.start)) + 2);
             juce::Path path;
             bool first = true;
             for (SamplePos s = sA; s < sB; ++s)
             {
-                const float x = (float) map.toX(c.start + (s - c.sourceOffset));
+                const float x = (float) map.toX(c.start + (SamplePos) std::llround((double) s * k) - c.sourceOffset);
                 const float y = mid - d[s] * half;
                 if (first) { path.startNewSubPath(x, y); first = false; }
                 else path.lineTo(x, y);
@@ -429,7 +497,7 @@ void TimelineView::paintWaveform(juce::Graphics& g, const Clip& c, juce::Rectang
             if (spp < 0.25)
                 for (SamplePos s = sA; s < sB; ++s)
                 {
-                    const float x = (float) map.toX(c.start + (s - c.sourceOffset));
+                    const float x = (float) map.toX(c.start + (SamplePos) std::llround((double) s * k) - c.sourceOffset);
                     g.fillEllipse(x - 2.0f, mid - d[s] * half - 2.0f, 4.0f, 4.0f);
                 }
         }
@@ -492,6 +560,7 @@ bool TimelineView::Drag::changed() const
         case DragMode::Move: return timeDelta != 0 || trackDelta != 0;
         case DragMode::TrimStart:
         case DragMode::TrimEnd:
+        case DragMode::Stretch:
         case DragMode::FadeIn:
         case DragMode::FadeOut: return value != origEdge;
         case DragMode::None: break;
@@ -510,6 +579,10 @@ bool TimelineView::Drag::apply(Project& p) const
             break;
         case DragMode::TrimStart: ok = trimClipStart(p, clipId, value); break;
         case DragMode::TrimEnd: ok = trimClipEnd(p, clipId, value); break;
+        case DragMode::Stretch:
+            if (auto* c = findClip(p, clipId))
+                ok = setClipStretch(p, clipId, stretchForEdge(*c, value));
+            break;
         case DragMode::FadeIn: ok = setClipFades(p, clipId, value, origOther); break;
         case DragMode::FadeOut: ok = setClipFades(p, clipId, origOther, value); break;
         case DragMode::None: break;
@@ -521,6 +594,7 @@ void TimelineView::cancelDrag()
 {
     const bool had = drag.mode != DragMode::None || preview.has_value();
     drag = {};
+    dragBase.reset();
     preview.reset();
     if (had)
         repaint();
@@ -544,7 +618,13 @@ void TimelineView::mouseDown(const juce::MouseEvent& e)
             {
                 juce::PopupMenu m;
                 m.addItem(1, "Set as align reference", true, state.alignReferenceClipId == hit.clipId);
+                m.addItem(2, juce::String::fromUTF8("Clip tempo\xe2\x80\xa6"));
                 m.showMenuAsync(juce::PopupMenu::Options(), [this, id = hit.clipId](int r) {
+                    if (r == 2)
+                    {
+                        showClipTempo(id);
+                        return;
+                    }
                     if (r == 1)
                     {
                         state.alignReferenceClipId = id;
@@ -605,6 +685,7 @@ void TimelineView::mouseDown(const juce::MouseEvent& e)
     auto* c = findClip(base, h.clipId);
     if (c == nullptr)
         return;
+    dragBase = proj;
     drag.down = e.getPosition();
     drag.clipId = h.clipId;
     switch (h.zone)
@@ -632,7 +713,19 @@ void TimelineView::mouseDown(const juce::MouseEvent& e)
             break;
         }
         case HitZone::TrimStart: drag.mode = DragMode::TrimStart; drag.name = "Trim"; drag.origEdge = c->start; break;
-        case HitZone::TrimEnd: drag.mode = DragMode::TrimEnd; drag.name = "Trim"; drag.origEdge = c->start + c->length; break;
+        case HitZone::TrimEnd:
+            drag.origEdge = c->start + c->length;
+            if (e.mods.isCommandDown() || e.mods.isCtrlDown()) // Ctrl/Cmd + edge: stretch instead of trim
+            {
+                drag.mode = DragMode::Stretch;
+                drag.name = "Stretch";
+            }
+            else
+            {
+                drag.mode = DragMode::TrimEnd;
+                drag.name = "Trim";
+            }
+            break;
         case HitZone::FadeIn:
             drag.mode = DragMode::FadeIn; drag.name = "Fade"; drag.origEdge = c->fadeIn; drag.origOther = c->fadeOut; break;
         case HitZone::FadeOut:
@@ -666,7 +759,8 @@ void TimelineView::updateDrag(const juce::MouseEvent& e)
             break;
         }
         case DragMode::TrimStart:
-        case DragMode::TrimEnd: drag.value = snapEdge(drag.origEdge + dx, doSnap, step); break;
+        case DragMode::TrimEnd:
+        case DragMode::Stretch: drag.value = snapEdge(drag.origEdge + dx, doSnap, step); break;
         case DragMode::FadeIn: drag.value = std::max<SamplePos>(0, drag.origEdge + dx); break;
         case DragMode::FadeOut: drag.value = std::max<SamplePos>(0, drag.origEdge - dx); break;
         case DragMode::None: return;
@@ -680,6 +774,7 @@ void TimelineView::updateDrag(const juce::MouseEvent& e)
 void TimelineView::mouseDrag(const juce::MouseEvent& e)
 {
     mouseX = e.x;
+    mouseY = e.y;
     if (draggingRuler)
     {
         const auto s = std::max<SamplePos>(0, map.toSample(e.x));
@@ -743,6 +838,29 @@ void TimelineView::mouseDoubleClick(const juce::MouseEvent& e)
         showGainPopup(e, h.clipId);
 }
 
+void TimelineView::showClipTempo(const juce::String& clipId)
+{
+    tempoWindow.reset();
+    auto closeFn = [safe = juce::Component::SafePointer<TimelineView>(this)] {
+        // Deferred: the dialog's own button handler is still on the stack.
+        juce::MessageManager::callAsync([safe] {
+            if (safe != nullptr)
+            {
+                safe->tempoWindow.reset();
+                safe->grabKeyboardFocus();
+            }
+        });
+    };
+    auto w = std::make_unique<TempoWindow>(closeFn);
+    auto* dlg = new ClipTempoDialog(app, clipId, closeFn);
+    w->setContentOwned(dlg, true);
+    w->setUsingNativeTitleBar(true);
+    w->centreAroundComponent(this, w->getWidth(), w->getHeight());
+    w->setVisible(true);
+    dlg->focusField();
+    tempoWindow = std::move(w);
+}
+
 void TimelineView::showGainPopup(const juce::MouseEvent& e, const juce::String& clipId)
 {
     Project copy = app.history().current();
@@ -766,6 +884,7 @@ void TimelineView::mouseMove(const juce::MouseEvent& e)
 {
     repaintColumn(mouseX);
     mouseX = e.x;
+    mouseY = e.y;
     repaintColumn(mouseX);
 
     juce::MouseCursor cur = juce::MouseCursor::NormalCursor;

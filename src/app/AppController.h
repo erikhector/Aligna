@@ -2,6 +2,7 @@
 #include "edit/EditHistory.h"
 #include "engine/PlaybackChain.h"
 #include "engine/SourcePool.h"
+#include "engine/StretchCache.h"
 #include <juce_audio_utils/juce_audio_utils.h>
 
 namespace aligna
@@ -14,6 +15,7 @@ public:
 
     EditHistory& history() { return hist; }
     SourcePool& pool() { return sources; }
+    StretchCache& stretchCache() { return stretched; }
     PlaybackEngine& engine() { return playback; }
     juce::AudioDeviceManager& devices() { return deviceManager; }
 
@@ -24,15 +26,18 @@ public:
     bool saveProject(const juce::File& file, juce::String& error);
     juce::File currentFile() const { return file; }
 
-    // Fired (message thread) after every project change, once the playback snapshot has been rebuilt.
+    // Fired (message thread) after every project change, once the playback snapshot has been rebuilt,
+    // and again whenever a stretched buffer finishes rendering.
     std::function<void()> onProjectChanged;
 
 private:
+    void projectChanged(); // requires the project's stretched buffers, then rebuilds the snapshot
     void rebuildSnapshot();
     void syncProjectRate();
 
     EditHistory hist { Project {} };
     SourcePool sources;
+    StretchCache stretched; // render jobs hold their own copies of the source audio
     PlaybackEngine playback;
     PlaybackChain chain { playback };
     juce::AudioDeviceManager deviceManager;

@@ -1,5 +1,7 @@
 #include "engine/Mixer.h"
+#include "engine/StretchCache.h"
 #include <catch2/catch_test_macros.hpp>
+#include <juce_events/juce_events.h>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 using namespace aligna;
@@ -48,6 +50,12 @@ juce::AudioBuffer<float> render(const MixSnapshot& s, SamplePos start, int n)
     b.clear();
     renderMix(s, start, b, 0, n);
     return b;
+}
+ExportSettings wavSettings(int depth)
+{
+    ExportSettings e;
+    e.format = depth == 16 ? ExportSettings::Format::Wav16 : ExportSettings::Format::Wav24;
+    return e;
 }
 const float k = static_cast<float>(std::cos(juce::MathConstants<double>::pi / 4));
 } // namespace
@@ -195,7 +203,7 @@ TEST_CASE("exportMix writes 24-bit wav matching renderMix")
     f.deleteFile();
     juce::String err;
     float last = 0;
-    REQUIRE(exportMix(*s, f, 24, err, [&](float p) { last = p; return true; }));
+    REQUIRE(exportMix(*s, f, wavSettings(24), err, [&](float p) { last = p; return true; }));
     CHECK(last == 1.0f);
     CHECK_FALSE(f.getSiblingFile(f.getFileName() + ".tmp").exists());
 
@@ -216,15 +224,106 @@ TEST_CASE("exportMix writes 24-bit wav matching renderMix")
     // cancel + errors
     auto f2 = juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("aligna_mix_cancel.wav");
     f2.deleteFile();
-    CHECK_FALSE(exportMix(*s, f2, 16, err, [](float) { return false; }));
+    CHECK_FALSE(exportMix(*s, f2, wavSettings(16), err, [](float) { return false; }));
     CHECK(err == "Export cancelled");
     CHECK_FALSE(f2.exists());
     CHECK_FALSE(f2.getSiblingFile(f2.getFileName() + ".tmp").exists());
-    CHECK_FALSE(exportMix(*s, f2, 32, err));
-    CHECK(err == "Unsupported bit depth");
     auto empty = mk({}, {});
-    CHECK_FALSE(exportMix(*empty, f2, 16, err));
+    CHECK_FALSE(exportMix(*empty, f2, wavSettings(16), err));
     CHECK(err == "Nothing to export");
+    f.deleteFile();
+}
+
+namespace
+{
+std::unique_ptr<juce::AudioFormatReader> openAny(const juce::File& f)
+{
+    juce::AudioFormatManager fm;
+    fm.registerBasicFormats();
+    return std::unique_ptr<juce::AudioFormatReader>(fm.createReaderFor(f));
+}
+juce::File tmpOut(const char* n)
+{
+    auto f = juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile(n);
+    f.deleteFile();
+    return f;
+}
+std::shared_ptr<MixSnapshot> sineMix(double rate, int n)
+{
+    auto b = std::make_shared<juce::AudioBuffer<float>>(1, n);
+    for (int i = 0; i < n; ++i)
+        b->setSample(0, i, 0.3f * std::sin(0.05f * static_cast<float>(i)));
+    Track t;
+    t.clips.push_back(mkClip("a", 0, n));
+    auto s = mk({ { "a", b } }, { t });
+    s->project.sampleRate = rate;
+    return s;
+}
+ExportSettings mp3Settings(int kbps = 256, juce::String title = "T")
+{
+    ExportSettings e;
+    e.format = ExportSettings::Format::Mp3;
+    e.kbps = kbps;
+    e.title = title;
+    return e;
+}
+} // namespace
+
+TEST_CASE("extensionFor")
+{
+    CHECK(extensionFor(ExportSettings::Format::Wav16) == ".wav");
+    CHECK(extensionFor(ExportSettings::Format::Wav24) == ".wav");
+    CHECK(extensionFor(ExportSettings::Format::Mp3) == ".mp3");
+}
+
+TEST_CASE("exports mp3")
+{
+    auto s = sineMix(48000, 48000);
+    auto f = tmpOut("aligna_mix_test.mp3");
+    juce::String err;
+    REQUIRE(exportMix(*s, f, mp3Settings(), err));
+    CHECK_FALSE(f.getSiblingFile(f.getFileName() + ".tmp").exists());
+    auto r = openAny(f);
+    REQUIRE(r != nullptr);
+    CHECK(r->numChannels == 2);
+    CHECK_THAT(r->sampleRate, WithinAbs(48000.0, 0.5));
+    CHECK(std::abs(static_cast<int>(r->lengthInSamples) - 48000) <= 2304);
+    r.reset();
+    f.deleteFile();
+}
+
+TEST_CASE("mp3 export of a 96 kHz project is 44.1 kHz with the right duration")
+{
+    auto s = sineMix(96000, 96000);
+    auto f = tmpOut("aligna_mix_96k.mp3");
+    juce::String err;
+    REQUIRE(exportMix(*s, f, mp3Settings(192), err));
+    auto r = openAny(f);
+    REQUIRE(r != nullptr);
+    CHECK_THAT(r->sampleRate, WithinAbs(44100.0, 0.5));
+    CHECK(std::abs(static_cast<int>(r->lengthInSamples) - 44100) <= 2304);
+    r.reset();
+    f.deleteFile();
+}
+
+TEST_CASE("mp3 cancel leaves no file")
+{
+    auto s = sineMix(48000, 48000);
+    auto f = tmpOut("aligna_mix_cancel.mp3");
+    juce::String err;
+    CHECK_FALSE(exportMix(*s, f, mp3Settings(), err, [](float) { return false; }));
+    CHECK(err == "Export cancelled");
+    CHECK_FALSE(f.exists());
+    CHECK_FALSE(f.getSiblingFile(f.getFileName() + ".tmp").exists());
+}
+
+TEST_CASE("mp3 export with odd title and a very short mix")
+{
+    auto s = sineMix(44100, 100);
+    auto f = tmpOut("aligna_mix_short.mp3");
+    juce::String err;
+    REQUIRE(exportMix(*s, f, mp3Settings(320, juce::String::fromUTF8("Mix \xc3\xb6 1")), err));
+    CHECK(openAny(f) != nullptr);
     f.deleteFile();
 }
 
@@ -240,9 +339,99 @@ TEST_CASE("makeSnapshot sorts clips stably and collects audio")
     t.clips = { c1, c2, c3 };
     p.tracks.push_back(t);
     SourcePool pool;
-    auto s = makeSnapshot(p, pool);
+    StretchCache cache;
+    auto s = makeSnapshot(p, pool, cache);
     CHECK(s->project.tracks[0].clips[0].id == c2.id);
     CHECK(s->project.tracks[0].clips[1].id == c3.id);
     CHECK(s->project.tracks[0].clips[2].id == c1.id);
     CHECK(s->audio.empty());
+}
+
+namespace
+{
+// Imports a 1 s mono 48 kHz ramp-modulated sine and returns its SourceInfo.
+SourceInfo importTestSource(SourcePool& pool, const juce::File& dir)
+{
+    juce::AudioBuffer<float> b(1, 48000);
+    for (int i = 0; i < 48000; ++i)
+        b.setSample(0, i, 0.5f * (float) std::sin(2.0 * juce::MathConstants<double>::pi * 330.0 * i / 48000.0));
+    const auto f = dir.getChildFile("src.wav");
+    {
+        juce::WavAudioFormat wav;
+        std::unique_ptr<juce::OutputStream> os(f.createOutputStream());
+        REQUIRE(os != nullptr);
+        std::unique_ptr<juce::AudioFormatWriter> w(wav.createWriterFor(os.get(), 48000, 1, 32, {}, 0));
+        REQUIRE(w != nullptr);
+        os.release();
+        REQUIRE(w->writeFromAudioSampleBuffer(b, 0, 48000));
+    }
+    juce::String err;
+    auto info = pool.import(f, 48000, err);
+    REQUIRE(info.has_value());
+    return *info;
+}
+
+struct StretchFixture
+{
+    juce::ScopedJuceInitialiser_GUI gui;
+    juce::File dir = juce::File::getSpecialLocation(juce::File::tempDirectory)
+                         .getChildFile("aligna_mx_" + juce::Uuid().toString());
+    SourcePool pool;
+    Project p;
+    Clip stretched, plain;
+    StretchFixture()
+    {
+        dir.createDirectory();
+        auto info = importTestSource(pool, dir);
+        p.sources.push_back(info);
+        stretched = mkClip(info.id, 0, 2 * info.length);
+        stretched.stretch = 2.0;
+        plain = mkClip(info.id, 0, info.length);
+        Track t1, t2;
+        t1.clips.push_back(stretched);
+        t2.clips.push_back(plain);
+        p.tracks = { t1, t2 };
+    }
+    ~StretchFixture() { dir.deleteRecursively(); }
+};
+} // namespace
+
+TEST_CASE("makeSnapshot: a stretched clip plays the cache buffer")
+{
+    StretchFixture f;
+    f.p.tracks[1].mute = true;
+    StretchCache cache;
+    cache.require(f.p, f.pool);
+    cache.waitForIdle();
+    auto buf = cache.get(bufferKey(f.stretched));
+    REQUIRE(buf != nullptr);
+
+    auto s = makeSnapshot(f.p, f.pool, cache);
+    CHECK(s->audio.count(bufferKey(f.stretched)) == 1);
+    auto b = render(*s, 0, 96000);
+    for (int i : { 100, 20000, 60000, 95999 })
+    {
+        CAPTURE(i);
+        CHECK_THAT(b.getSample(0, i), WithinAbs(buf->getSample(0, i) * k, 1e-6));
+    }
+}
+
+TEST_CASE("makeSnapshot: a stretched clip whose buffer is not ready is silent")
+{
+    StretchFixture f;
+    StretchCache cache; // nothing required: buffer not ready
+    auto s = makeSnapshot(f.p, f.pool, cache);
+    CHECK(s->audio.count(bufferKey(f.stretched)) == 0);
+
+    f.p.tracks[1].mute = true;
+    auto silent = makeSnapshot(f.p, f.pool, cache);
+    auto b = render(*silent, 0, 96000);
+    CHECK_THAT(b.getMagnitude(0, 96000), WithinAbs(0, 1e-9));
+
+    // The unstretched clip of the same source still plays.
+    f.p.tracks[1].mute = false;
+    f.p.tracks[0].mute = true;
+    auto plain = makeSnapshot(f.p, f.pool, cache);
+    auto pb = render(*plain, 0, 48000);
+    CHECK(pb.getMagnitude(0, 48000) > 0.1f);
 }

@@ -56,7 +56,7 @@ private:
     void doNew();
     void doOpen();
     void doExport();
-    void startExport(int bitDepth, const juce::File&);
+    void startExport(const ExportSettings&, const juce::File&);
     void projectChanged();
     void layoutHeaders();
     std::vector<juce::String> alignTargets() const; // selected clips other than the reference, project order
@@ -72,6 +72,7 @@ private:
     std::vector<std::unique_ptr<TrackHeader>> headers;
     std::unique_ptr<juce::FileChooser> chooser;
     std::unique_ptr<juce::ThreadWithProgressWindow> exportTask;
+    ExportSettings lastExport; // format + bitrate chosen last in this session, preselected next time
     bool promptActive = false;
     std::unique_ptr<juce::DialogWindow> alignWindow; // at most one, non-modal
     std::unique_ptr<juce::MenuBarComponent> menuBar; // not used on macOS (native menu bar)

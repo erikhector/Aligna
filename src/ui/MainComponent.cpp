@@ -379,9 +379,18 @@ void MainComponent::doExport()
         juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::InfoIcon, "Export mix", "Nothing to export.");
         return;
     }
-    auto* w = new juce::AlertWindow("Export mix", "Bit depth of the exported WAV file:", juce::MessageBoxIconType::NoIcon, this);
-    w->addComboBox("depth", { "16-bit", "24-bit" });
-    w->getComboBoxComponent("depth")->setSelectedItemIndex(1);
+    auto* w = new juce::AlertWindow("Export mix", "Format of the exported file:", juce::MessageBoxIconType::NoIcon, this);
+    w->addComboBox("format", { "WAV 16-bit", "WAV 24-bit", "MP3" });
+    auto* formatBox = w->getComboBoxComponent("format");
+    formatBox->setSelectedItemIndex(lastExport.format == ExportSettings::Format::Wav16   ? 0
+                                    : lastExport.format == ExportSettings::Format::Wav24 ? 1
+                                                                                          : 2);
+    w->addComboBox("bitrate", { "192 kbps", "256 kbps", "320 kbps" }, "MP3 bitrate:");
+    auto* bitrateBox = w->getComboBoxComponent("bitrate");
+    bitrateBox->setSelectedItemIndex(lastExport.kbps == 192 ? 0 : lastExport.kbps == 256 ? 1 : 2);
+    // The bitrate only applies to MP3.
+    formatBox->onChange = [formatBox, bitrateBox] { bitrateBox->setEnabled(formatBox->getSelectedItemIndex() == 2); };
+    formatBox->onChange();
     w->addButton("Export...", 1, juce::KeyPress(juce::KeyPress::returnKey));
     w->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
     juce::Component::SafePointer<MainComponent> safe(this);
@@ -389,23 +398,34 @@ void MainComponent::doExport()
                        juce::ModalCallbackFunction::create([safe, w](int r) {
                            if (r != 1 || safe == nullptr)
                                return;
-                           const int depth = w->getComboBoxComponent("depth")->getSelectedItemIndex() == 0 ? 16 : 24;
                            auto& self = *safe;
-                           auto base = self.app.currentFile() != juce::File()
-                                           ? self.app.currentFile().getSiblingFile(self.app.currentFile().getFileNameWithoutExtension() + " mix.wav")
+                           ExportSettings settings;
+                           const int fi = w->getComboBoxComponent("format")->getSelectedItemIndex();
+                           settings.format = fi == 0 ? ExportSettings::Format::Wav16
+                                             : fi == 1 ? ExportSettings::Format::Wav24
+                                                       : ExportSettings::Format::Mp3;
+                           const int bi = w->getComboBoxComponent("bitrate")->getSelectedItemIndex();
+                           settings.kbps = bi == 0 ? 192 : bi == 1 ? 256 : 320;
+                           self.lastExport.format = settings.format;
+                           self.lastExport.kbps = settings.kbps;
+                           const auto ext = extensionFor(settings.format);
+                           const auto projectFile = self.app.currentFile();
+                           settings.title = projectFile != juce::File() ? projectFile.getFileNameWithoutExtension() : juce::String("Untitled");
+                           auto base = projectFile != juce::File()
+                                           ? projectFile.getSiblingFile(settings.title + " mix" + ext)
                                            : juce::File::getSpecialLocation(juce::File::userDocumentsDirectory)
-                                                 .getChildFile("Untitled mix.wav");
-                           self.chooser = std::make_unique<juce::FileChooser>("Export mix", base, "*.wav");
+                                                 .getChildFile("Untitled mix" + ext);
+                           self.chooser = std::make_unique<juce::FileChooser>("Export mix", base, "*" + ext);
                            self.chooser->launchAsync(
                                juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles
                                    | juce::FileBrowserComponent::warnAboutOverwriting,
-                               [safe, depth](const juce::FileChooser& fc) {
+                               [safe, settings, ext](const juce::FileChooser& fc) {
                                    if (safe == nullptr)
                                        return;
                                    auto f = fc.getResult();
                                    if (f != juce::File())
                                    {
-                                       const auto target = f.getParentDirectory().getChildFile(withExtension(f.getFileName(), ".wav"));
+                                       const auto target = f.getParentDirectory().getChildFile(exportFileName(f.getFileName(), ext));
                                        if (isProjectSource(safe->app.history().current(), target))
                                        {
                                            juce::AlertWindow::showMessageBoxAsync(
@@ -414,7 +434,7 @@ void MainComponent::doExport()
                                            safe->timeline.grabKeyboardFocus();
                                            return;
                                        }
-                                       safe->confirmOverwrite(f, target, [safe, depth, target] { safe->startExport(depth, target); });
+                                       safe->confirmOverwrite(f, target, [safe, settings, target] { safe->startExport(settings, target); });
                                    }
                                    else
                                        safe->timeline.grabKeyboardFocus();
@@ -428,15 +448,15 @@ namespace
 class ExportTask : public juce::ThreadWithProgressWindow
 {
 public:
-    ExportTask(std::shared_ptr<const MixSnapshot> s, juce::File f, int d, std::function<void(bool, juce::String)> done,
+    ExportTask(std::shared_ptr<const MixSnapshot> s, juce::File f, ExportSettings d, std::function<void(bool, juce::String)> done,
                juce::Component* around)
         : ThreadWithProgressWindow("Exporting mix...", true, true, 10000, {}, around),
-          snap(std::move(s)), file(std::move(f)), depth(d), onDone(std::move(done))
+          snap(std::move(s)), file(std::move(f)), settings(std::move(d)), onDone(std::move(done))
     {
     }
     void run() override
     {
-        ok = exportMix(*snap, file, depth, error, [this](float p) {
+        ok = exportMix(*snap, file, settings, error, [this](float p) {
             setProgress(p);
             return ! threadShouldExit();
         });
@@ -446,20 +466,29 @@ public:
 private:
     std::shared_ptr<const MixSnapshot> snap;
     juce::File file;
-    int depth;
+    ExportSettings settings;
     std::function<void(bool, juce::String)> onDone;
     bool ok = false;
     juce::String error;
 };
 } // namespace
 
-void MainComponent::startExport(int bitDepth, const juce::File& f)
+void MainComponent::startExport(const ExportSettings& settings, const juce::File& f)
 {
+    if (const int n = countStretching(app.history().current(), app.pool(), app.stretchCache()); n > 0)
+    {
+        juce::AlertWindow::showMessageBoxAsync(
+            juce::MessageBoxIconType::WarningIcon, "Export",
+            juce::String(n) + (n == 1 ? " clip is" : " clips are") + " still stretching "
+                + juce::String::fromUTF8("\xe2\x80\x94") + " export again in a moment.");
+        timeline.grabKeyboardFocus();
+        return;
+    }
     // Snapshot on the message thread; the worker only reads it.
-    auto snap = makeSnapshot(app.history().current(), app.pool());
+    auto snap = makeSnapshot(app.history().current(), app.pool(), app.stretchCache());
     juce::Component::SafePointer<MainComponent> safe(this);
     exportTask = std::make_unique<ExportTask>(
-        std::move(snap), f, bitDepth,
+        std::move(snap), f, settings,
         [safe](bool ok, juce::String err) {
             juce::MessageManager::callAsync([safe, ok, err] {
                 if (safe == nullptr)

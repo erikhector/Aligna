@@ -27,7 +27,17 @@ FetchContent_Declare(Catch2
   GIT_REPOSITORY https://github.com/catchorg/Catch2.git
   GIT_TAG v3.7.1
   GIT_SHALLOW ON)
-FetchContent_MakeAvailable(JUCE Catch2)
+# Rubber Band (GPL-2.0-or-later): no CMake build, we compile its single-file unit into aligna_core.
+FetchContent_Declare(rubberband
+  GIT_REPOSITORY https://github.com/breakfastquay/rubberband.git
+  GIT_TAG v4.0.0
+  GIT_SHALLOW ON)
+# LAME 3.100 (LGPL): MP3 encoder, only libmp3lame/*.c is built (see lame_enc below).
+FetchContent_Declare(lame
+  URL https://downloads.sourceforge.net/project/lame/lame/3.100/lame-3.100.tar.gz
+  URL_HASH SHA256=ddfe36cab873794038ae2c1210557ad34857a4b6bdc515785d1da9e175b1da1e
+  DOWNLOAD_EXTRACT_TIMESTAMP ON)
+FetchContent_MakeAvailable(JUCE Catch2 rubberband lame)
 
 # Compile definitions shared by every target so app and tests see the same JUCE config.
 set(ALIGNA_JUCE_DEFS
@@ -49,23 +59,61 @@ target_sources(aligna_core PRIVATE
   src/core/Version.cpp
   src/edit/ClipOps.cpp
   src/edit/DragMath.cpp
+  src/edit/StretchMath.cpp
   src/edit/EditHistory.cpp
   src/io/ProjectFile.cpp
   src/io/FileNaming.cpp
+  src/io/Mp3Encoder.cpp
   src/engine/Mixer.cpp
   src/engine/PlaybackChain.cpp
   src/engine/PlaybackEngine.cpp
   src/engine/SourcePool.cpp
+  src/engine/Stretcher.cpp
+  src/engine/StretchCache.cpp
   src/model/Grid.cpp
   src/align/Correlate.cpp
   src/align/AlignClips.cpp
   src/align/AlignResults.cpp
   src/ui/TimelineMapping.cpp
 )
+# Third-party Rubber Band unit: built-in FFT/resampler (vDSP on Apple), warnings silenced for this file only.
+set(RB_SINGLE ${rubberband_SOURCE_DIR}/single/RubberBandSingle.cpp)
+target_sources(aligna_core PRIVATE ${RB_SINGLE})
+if(MSVC)
+  set_source_files_properties(${RB_SINGLE} PROPERTIES COMPILE_OPTIONS "/w" COMPILE_DEFINITIONS "NOMINMAX")
+else()
+  set_source_files_properties(${RB_SINGLE} PROPERTIES COMPILE_OPTIONS "-w")
+endif()
+# LAME encoder library (no mpglib, no frontend, no SIMD quantize helper), warnings silenced for this target only.
+file(GLOB LAME_SOURCES CONFIGURE_DEPENDS ${lame_SOURCE_DIR}/libmp3lame/*.c)
+add_library(lame_enc STATIC ${LAME_SOURCES})
+target_include_directories(lame_enc
+  PUBLIC ${lame_SOURCE_DIR}/include
+  PRIVATE ${lame_SOURCE_DIR}/libmp3lame ${lame_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/third_party/lame)
+target_compile_definitions(lame_enc PRIVATE HAVE_CONFIG_H STDC_HEADERS HAVE_STDINT_H HAVE_ERRNO_H
+  HAVE_FCNTL_H HAVE_LIMITS_H ieee754_float32_t=float)
+if(MSVC)
+  target_compile_definitions(lame_enc PRIVATE _CRT_SECURE_NO_WARNINGS)
+  target_compile_options(lame_enc PRIVATE /w)
+else()
+  target_compile_definitions(lame_enc PRIVATE TAKEHIRO_IEEE754_HACK)
+  target_compile_options(lame_enc PRIVATE -w)
+endif()
+set_target_properties(lame_enc PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+# License texts for release packaging: copied next to the app so CI needn't know _deps paths.
+configure_file(${lame_SOURCE_DIR}/COPYING ${CMAKE_BINARY_DIR}/LICENSE-LAME.txt COPYONLY)
+configure_file(${rubberband_SOURCE_DIR}/COPYING ${CMAKE_BINARY_DIR}/LICENSE-RubberBand.txt COPYONLY)
+
 target_include_directories(aligna_core PUBLIC src)
+target_include_directories(aligna_core PRIVATE ${rubberband_SOURCE_DIR})
+if(APPLE)
+  target_link_libraries(aligna_core PUBLIC "-framework Accelerate")
+endif()
 target_compile_features(aligna_core PUBLIC cxx_std_20)
 target_compile_definitions(aligna_core PUBLIC ${ALIGNA_JUCE_DEFS})
 target_link_libraries(aligna_core
+  PRIVATE lame_enc
   PUBLIC
     juce::juce_core
     juce::juce_audio_basics
@@ -91,6 +139,7 @@ target_sources(Aligna PRIVATE
   src/ui/TrackHeader.cpp
   src/ui/TimelineView.cpp
   src/ui/AlignDialog.cpp
+  src/ui/ClipTempoDialog.cpp
   src/ui/MainComponent.cpp
 )
 target_compile_definitions(Aligna PRIVATE JUCE_STANDALONE_APPLICATION=1)
@@ -121,6 +170,11 @@ add_executable(aligna_tests
   tests/AlignTest.cpp
   tests/AlignResultsTest.cpp
   tests/FileNamingTest.cpp
+  tests/StretcherTest.cpp
+  tests/StretchOpsTest.cpp
+  tests/StretchCacheTest.cpp
+  tests/StretchMathTest.cpp
+  tests/Mp3EncoderTest.cpp
 )
 target_link_libraries(aligna_tests PRIVATE aligna_core Catch2::Catch2WithMain)
 list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)
