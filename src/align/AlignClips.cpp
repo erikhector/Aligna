@@ -15,10 +15,16 @@ const Clip* findClipConst(const Project& p, const juce::String& id)
     return nullptr;
 }
 
-// Renders `clip` alone (mono = channel average, unity gain, no fades) over timeline [from, from + n).
-// Samples outside the clip's extent or the decoded buffer are 0.
-std::vector<float> renderClipAlone(const MixSnapshot& s, const Clip& clip, SamplePos from, SamplePos n)
+// Share of computeAlignment's progress taken by rendering the two clips; the rest is findOffset.
+constexpr float kRenderShare = 0.1f;
+} // namespace
+
+std::optional<std::vector<float>> renderClipAlone(const MixSnapshot& s, const Clip& clip, SamplePos from, SamplePos n,
+                                                  const std::function<bool(float)>& progress, SamplePos blockSize)
 {
+    blockSize = std::max<SamplePos>(1, blockSize);
+    if (progress && ! progress(0.0f))
+        return std::nullopt;
     std::vector<float> out((size_t) std::max<SamplePos>(0, n), 0.0f);
     const auto it = s.audio.find(bufferKey(clip));
     if (it == s.audio.end() || it->second == nullptr)
@@ -34,17 +40,22 @@ std::vector<float> renderClipAlone(const MixSnapshot& s, const Clip& clip, Sampl
     b = std::max(b, clip.start - clip.sourceOffset);
     e = std::min(e, clip.start - clip.sourceOffset + (SamplePos) buf.getNumSamples());
     const float scale = 1.0f / (float) channels;
-    for (SamplePos pos = b; pos < e; ++pos)
+    for (SamplePos blockBegin = b, blockEnd = b; blockBegin < e; blockBegin = blockEnd)
     {
-        const auto src = (int) (clip.sourceOffset + (pos - clip.start));
-        float v = 0.0f;
-        for (int ch = 0; ch < channels; ++ch)
-            v += buf.getSample(ch, src);
-        out[(size_t) (pos - from)] = v * scale;
+        if (blockBegin > b && progress && ! progress((float) (blockBegin - b) / (float) (e - b)))
+            return std::nullopt;
+        blockEnd = blockBegin + std::min(blockSize, e - blockBegin);
+        for (SamplePos pos = blockBegin; pos < blockEnd; ++pos)
+        {
+            const auto src = (int) (clip.sourceOffset + (pos - clip.start));
+            float v = 0.0f;
+            for (int ch = 0; ch < channels; ++ch)
+                v += buf.getSample(ch, src);
+            out[(size_t) (pos - from)] = v * scale;
+        }
     }
     return out;
 }
-} // namespace
 
 std::optional<ClipAlignment> computeAlignment(const MixSnapshot& s, const juce::String& referenceClipId,
                                               const juce::String& targetClipId,
@@ -97,10 +108,25 @@ std::optional<ClipAlignment> computeAlignment(const MixSnapshot& s, const juce::
         return std::nullopt;
     }
 
-    const auto refSignal = renderClipAlone(s, *ref, region.getStart(), region.getLength());
-    const auto tgtSignal = renderClipAlone(s, *tgt, region.getStart() - maxLag, region.getLength() + 2 * maxLag);
+    // Overall progress: the two renders share [0, kRenderShare), findOffset takes the rest.
+    auto scaled = [&](float from, float to) -> std::function<bool(float)> {
+        if (! progress)
+            return {};
+        return [&progress, from, to](float p) { return progress(from + (to - from) * p); };
+    };
+    const auto refSignal =
+        renderClipAlone(s, *ref, region.getStart(), region.getLength(), scaled(0.0f, 0.5f * kRenderShare));
+    const auto tgtSignal = refSignal ? renderClipAlone(s, *tgt, region.getStart() - maxLag,
+                                                       region.getLength() + 2 * maxLag,
+                                                       scaled(0.5f * kRenderShare, kRenderShare))
+                                     : std::nullopt;
+    if (! refSignal || ! tgtSignal)
+    {
+        error = "Cancelled";
+        return std::nullopt;
+    }
 
-    const auto offset = findOffset(refSignal, tgtSignal, -maxLag, maxLag, rate, progress, error);
+    const auto offset = findOffset(*refSignal, *tgtSignal, -maxLag, maxLag, rate, scaled(kRenderShare, 1.0f), error);
     if (!offset)
         return std::nullopt;
 
