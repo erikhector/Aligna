@@ -27,5 +27,10 @@ private:
 
     juce::AudioFormatManager formats;
     std::map<juce::String, AudioData> buffers;
+
+public:
+    // Forgets one buffer (no-op for an unknown id). Snapshots and render jobs share ownership, so anything
+    // still using it keeps it alive.
+    void remove(const juce::String& id);
 };
 } // namespace aligna

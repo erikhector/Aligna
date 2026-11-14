@@ -115,9 +115,27 @@ TEST_CASE("undo, save, redo keeps the moved path", "[takes]")
 TEST_CASE("isDiskAlmostFull treats unknown free space as not full", "[takes]")
 {
     constexpr juce::int64 MB = 1024 * 1024;
-    REQUIRE_FALSE(isDiskAlmostFull(0));
-    REQUIRE_FALSE(isDiskAlmostFull(-1));
-    REQUIRE(isDiskAlmostFull(49 * MB));
-    REQUIRE_FALSE(isDiskAlmostFull(50 * MB));
-    REQUIRE_FALSE(isDiskAlmostFull(1024 * MB));
+    constexpr juce::int64 total = 4096 * MB;
+    REQUIRE_FALSE(isDiskAlmostFull(0, 0)); // JUCE could not query the volume
+    REQUIRE_FALSE(isDiskAlmostFull(0, -1));
+    REQUIRE_FALSE(isDiskAlmostFull(-1, 0));
+    REQUIRE_FALSE(isDiskAlmostFull(-1, total));
+    REQUIRE(isDiskAlmostFull(49 * MB, total));
+    REQUIRE(isDiskAlmostFull(49 * MB, 0)); // a known free size is trusted without the total
+    REQUIRE_FALSE(isDiskAlmostFull(50 * MB, total));
+    REQUIRE_FALSE(isDiskAlmostFull(1024 * MB, total));
+}
+
+TEST_CASE("isDiskAlmostFull treats zero free bytes on a known volume as full", "[takes]")
+{
+    constexpr juce::int64 MB = 1024 * 1024;
+    REQUIRE(isDiskAlmostFull(0, 4096 * MB));
+    REQUIRE(isDiskAlmostFull(0, 1));
+}
+
+TEST_CASE("isDiskAlmostFull(folder) queries the volume, also for a folder that does not exist yet", "[takes]")
+{
+    const auto tmp = juce::File::getSpecialLocation(juce::File::tempDirectory);
+    const auto missing = tmp.getChildFile("aligna-no-such-folder-" + juce::String(juce::Random::getSystemRandom().nextInt64()));
+    REQUIRE(isDiskAlmostFull(missing) == isDiskAlmostFull(tmp.getBytesFreeOnVolume(), tmp.getVolumeTotalSize()));
 }

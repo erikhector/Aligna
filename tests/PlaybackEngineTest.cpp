@@ -135,6 +135,39 @@ TEST_CASE("PlaybackEngine frees retired snapshots", "[engine]")
     REQUIRE(w.expired());
 }
 
+TEST_CASE("PlaybackEngine purgeRetired frees old snapshots without a further setSnapshot", "[engine]")
+{
+    PlaybackEngine e;
+    REQUIRE_FALSE(e.purgeRetired()); // nothing retired
+    auto s1 = makeSnap(0.2f);
+    std::weak_ptr<const MixSnapshot> w = s1;
+    e.setSnapshot(std::move(s1));
+    REQUIRE_FALSE(e.purgeRetired()); // the current snapshot is not retired
+    e.setSnapshot(std::make_shared<const MixSnapshot>());
+    REQUIRE(e.purgeRetired()); // younger than the safety delay: kept
+    REQUIRE_FALSE(w.expired());
+    juce::Thread::sleep((int) PlaybackEngine::retireMs + 100);
+    REQUIRE_FALSE(e.purgeRetired());
+    REQUIRE(w.expired());
+}
+
+TEST_CASE("PlaybackEngine purgeRetired(waitForAll) keeps the safety delay", "[engine]")
+{
+    PlaybackEngine e;
+    auto s1 = makeSnap(0.2f);
+    std::weak_ptr<const MixSnapshot> w = s1;
+    e.setSnapshot(std::move(s1));
+    e.setSnapshot(nullptr);
+    const auto t0 = juce::Time::getMillisecondCounter();
+    REQUIRE_FALSE(e.purgeRetired(true));
+    REQUIRE(juce::Time::getMillisecondCounter() - t0 >= PlaybackEngine::retireMs - 20); // not freed early
+    REQUIRE(w.expired());
+    e.play(); // no snapshot: silent
+    juce::AudioBuffer<float> a(2, 64);
+    pull(e, a);
+    REQUIRE_THAT(a.getMagnitude(0, 64), WithinAbs(0.0, 1e-9));
+}
+
 TEST_CASE("PlaybackEngine seek during audio block is not lost", "[engine]")
 {
     PlaybackEngine e;

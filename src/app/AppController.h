@@ -41,7 +41,8 @@ public:
     // Stops, keeps the take file and adds the take as one "Record" step. Returns a message for the user, empty
     // if all went well. Not recording: returns {}.
     juce::String stopRecording();
-    // Fired (message thread) when recording stopped by itself (device failure, disk full); the take is kept.
+    // Fired (message thread) when recording stopped by itself (device failure, failed disk write, disk full,
+    // take length limit); the take is kept.
     std::function<void(juce::String message)> onRecordingStopped;
 
     // Fired (message thread) after every project change, once the playback snapshot has been rebuilt,
@@ -52,10 +53,14 @@ private:
     void projectChanged(); // requires the project's stretched buffers, then rebuilds the snapshot
     void rebuildSnapshot();
     void syncProjectRate();
+    // Stops playback and drops every buffer of the outgoing project: empty snapshot, pool and stretch cache.
+    void releaseProjectAudio();
     void beginRecording(const std::function<void(juce::String)>& done); // inputs are enabled
     int activeInputChannels() const;
     bool enableFirstInput();
-    void timerCallback() override; // polls a running recording for failure and free disk space
+    // Frees retired playback snapshots; polls a running recording for failure, free disk space and length.
+    // Runs while recording or while a retired snapshot is waiting to be freed.
+    void timerCallback() override;
 
     EditHistory hist { Project {} };
     SourcePool sources;

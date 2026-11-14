@@ -4,6 +4,38 @@
 
 namespace aligna
 {
+// ThreadedWriter drops the result of every write it makes on its background thread, so a full or removed disk
+// would go unnoticed. This forwards to the real writer and records a failed write or flush in the Recorder.
+class Recorder::CheckedWriter : public juce::AudioFormatWriter
+{
+public:
+    CheckedWriter(std::unique_ptr<juce::AudioFormatWriter> w, Recorder& r)
+        : juce::AudioFormatWriter(nullptr, w->getFormatName(), w->getSampleRate(), w->getNumChannels(),
+                                  w->getBitsPerSample()),
+          inner(std::move(w)), owner(r)
+    {
+        usesFloatingPointData = inner->isFloatingPoint();
+    }
+
+    bool write(const int** samples, int numSamples) override { return check(inner->write(samples, numSamples)); }
+    bool flush() override { return check(inner->flush()); }
+
+private:
+    bool check(bool ok)
+    {
+        if (!ok)
+        {
+            int expected = none; // an earlier failure keeps its message
+            owner.failure.compare_exchange_strong(expected, disk);
+            owner.capturing = false;
+        }
+        return ok;
+    }
+
+    std::unique_ptr<juce::AudioFormatWriter> inner;
+    Recorder& owner;
+};
+
 Recorder::Recorder(int bufferSamples) : requestedBuffer(bufferSamples), thread("Aligna recorder") {}
 
 Recorder::~Recorder()
@@ -30,6 +62,19 @@ bool Recorder::open(const juce::File& f, double deviceRate, int numChannels, juc
         error = "Could not create " + f.getFullPathName();
         return false;
     }
+    return open(std::move(stream), f, deviceRate, numChannels, error);
+}
+
+bool Recorder::open(std::unique_ptr<juce::OutputStream> stream, const juce::File& f, double deviceRate,
+                    int numChannels, juce::String& error)
+{
+    if (isOpen())
+        close();
+    if (stream == nullptr || numChannels < 1 || deviceRate <= 0.0)
+    {
+        error = "Invalid recording format.";
+        return false;
+    }
     juce::WavAudioFormat fmt;
     std::unique_ptr<juce::AudioFormatWriter> w(
         fmt.createWriterFor(stream.get(), deviceRate, (unsigned) numChannels, 24, {}, 0));
@@ -53,7 +98,8 @@ bool Recorder::open(const juce::File& f, double deviceRate, int numChannels, juc
     if (! thread.isThreadRunning())
         thread.startThread();
     const int buffer = requestedBuffer > 0 ? requestedBuffer : (int) (deviceRate * 10.0);
-    auto tw = std::make_unique<juce::AudioFormatWriter::ThreadedWriter>(w.release(), thread, buffer);
+    auto tw = std::make_unique<juce::AudioFormatWriter::ThreadedWriter>(new CheckedWriter(std::move(w), *this),
+                                                                        thread, buffer);
     tw->setFlushInterval((int) deviceRate);
     {
         const juce::SpinLock::ScopedLockType sl(lock);
@@ -129,6 +175,7 @@ juce::String Recorder::failureMessage() const
     {
         case overflow: return "Recording stopped: the disk could not keep up.";
         case device: return "Recording stopped: the audio device stopped or changed.";
+        case disk: return "Recording stopped: writing to the disk failed. It may be full or disconnected.";
         default: return {};
     }
 }

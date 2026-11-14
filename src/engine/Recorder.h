@@ -16,6 +16,9 @@ public:
     ~Recorder();
 
     bool open(const juce::File& file, double deviceRate, int numChannels, juce::String& error);
+    // As above, but writes to `stream` instead of creating `file` (which close() still reports). For tests.
+    bool open(std::unique_ptr<juce::OutputStream> stream, const juce::File& file, double deviceRate, int numChannels,
+              juce::String& error);
     void begin() noexcept;
     void process(const float* const* in, int numIn, int numSamples) noexcept;
     void deviceStopped() noexcept;
@@ -30,13 +33,16 @@ public:
 
     bool isOpen() const { return opened.load(); }
     bool isCapturing() const { return capturing.load(); }
+    // Set from the audio thread (overflow, device) or the writer thread (a failed disk write); capture stops.
     bool hasFailed() const { return failure.load() != 0; }
     juce::String failureMessage() const;
+    SamplePos samplesCaptured() const { return written.load(); } // per channel, since begin()
     float getAndResetPeak() noexcept;
 
 private:
     static constexpr int zeroLength = 8192;
-    enum Failure { none = 0, overflow = 1, device = 2 };
+    enum Failure { none = 0, overflow = 1, device = 2, disk = 3 };
+    class CheckedWriter;
 
     int requestedBuffer;
     juce::TimeSliceThread thread;

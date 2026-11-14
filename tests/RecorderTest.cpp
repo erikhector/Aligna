@@ -45,6 +45,34 @@ void feedSine(Recorder& r, int blocks, int len, int startIndex = 0)
         r.process(ch, 1, len);
     }
 }
+
+// In-memory stream whose writes fail once `limit` bytes have been written, like a volume that fills up.
+struct FailingStream : juce::OutputStream
+{
+    explicit FailingStream(juce::int64 limitBytes) : limit(limitBytes) {}
+    bool write(const void*, size_t n) override
+    {
+        if (pos + (juce::int64) n > limit)
+            return false;
+        pos += (juce::int64) n;
+        return true;
+    }
+    void flush() override {}
+    juce::int64 getPosition() override { return pos; }
+    bool setPosition(juce::int64 p) override
+    {
+        pos = p;
+        return true;
+    }
+    juce::int64 limit, pos = 0;
+};
+
+bool waitForFailure(const Recorder& r)
+{
+    for (int t = 0; t < 300 && !r.hasFailed(); ++t)
+        juce::Thread::sleep(10);
+    return r.hasFailed();
+}
 } // namespace
 
 TEST_CASE("records mono input exactly", "[recorder]")
@@ -179,4 +207,51 @@ TEST_CASE("deviceStopped fails", "[recorder]")
     r.deviceStopped();
     REQUIRE(r.hasFailed());
     REQUIRE(r.failureMessage() == "Recording stopped: the audio device stopped or changed.");
+}
+
+TEST_CASE("a failed disk write fails the recording", "[recorder]")
+{
+    Recorder r;
+    juce::String err;
+    // Room for the header and the first blocks only (24-bit mono: 3 bytes per sample).
+    REQUIRE(r.open(std::make_unique<FailingStream>(4096), juce::File(), 48000.0, 1, err));
+    r.begin();
+    REQUIRE_FALSE(r.hasFailed());
+    for (int k = 0; k < 20 && !r.hasFailed(); ++k) // far below the 10 s FIFO: not an overflow
+    {
+        feedSine(r, 1, 480, k * 480);
+        juce::Thread::sleep(5);
+    }
+    REQUIRE(waitForFailure(r));
+    REQUIRE_FALSE(r.isCapturing());
+    REQUIRE(r.failureMessage() == "Recording stopped: writing to the disk failed. It may be full or disconnected.");
+    const auto before = r.samplesCaptured();
+    feedSine(r, 1, 480);
+    REQUIRE(r.samplesCaptured() == before); // nothing more is queued
+    r.begin();
+    REQUIRE_FALSE(r.isCapturing()); // cannot be restarted
+    r.close();
+}
+
+TEST_CASE("a healthy stream does not report a disk failure", "[recorder]")
+{
+    Recorder r;
+    juce::String err;
+    REQUIRE(r.open(std::make_unique<FailingStream>(1 << 24), juce::File(), 48000.0, 1, err));
+    r.begin();
+    feedSine(r, 100, 480);
+    REQUIRE(r.samplesCaptured() == 48000);
+    juce::Thread::sleep(300); // lets the writer thread drain and flush the header
+    REQUIRE_FALSE(r.hasFailed());
+    REQUIRE(r.close().numSamples == 48000);
+    REQUIRE_FALSE(r.hasFailed());
+}
+
+TEST_CASE("open rejects a missing stream", "[recorder]")
+{
+    Recorder r;
+    juce::String err;
+    REQUIRE_FALSE(r.open(std::unique_ptr<juce::OutputStream>(), juce::File(), 48000.0, 1, err));
+    REQUIRE(err.isNotEmpty());
+    REQUIRE_FALSE(r.isOpen());
 }

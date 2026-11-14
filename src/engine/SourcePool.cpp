@@ -161,4 +161,6 @@ AudioData SourcePool::get(const juce::String& id) const
 }
 
 void SourcePool::clear() { buffers.clear(); }
+
+void SourcePool::remove(const juce::String& id) { buffers.erase(id); }
 } // namespace aligna
