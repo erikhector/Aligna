@@ -55,6 +55,7 @@ private:
     void confirmOverwrite(const juce::File& chosen, const juce::File& target, std::function<void()> go);
     void doNew();
     void doOpen();
+    void openFile(const juce::File&); // replaces the project (no unsaved-changes question); reports failures
     void doExport();
     void startExport(const ExportSettings&, const juce::File&);
     void projectChanged();
