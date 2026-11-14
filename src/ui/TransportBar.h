@@ -17,6 +17,8 @@ public:
     void toggleRecord();     // starts a recording, or stops the running one
     void refresh();
 
+    std::function<void(bool recording)> onRecordingChanged; // fired by refresh() when recording starts or stops
+
     void closeDialogs(); // closes the Audio Settings dialog if open
 
 private:
@@ -35,6 +37,7 @@ private:
     juce::Label recLabel;
     InputMeter meter;
     double lastMeterMs = 0;
+    bool wasRecording = false;
     juce::Label position, bpmLabel { {}, "BPM" };
     juce::TextEditor bpmField;
     juce::ComboBox beatsBox, unitBox;

@@ -12,6 +12,17 @@ MainComponent::MainComponent(AppController& a) : app(a), transport(a, tlState), 
     addAndMakeVisible(timeline);
     addAndMakeVisible(headerColumn);
     headerColumn.setInterceptsMouseClicks(false, true);
+    transport.onRecordingChanged = [this](bool rec) {
+        if (rec)
+        {
+            timeline.recordingStarted();
+            closeAlignDialog();
+        }
+        for (auto& h : headers)
+            h->setEnabled(! rec);
+        menuItemsChanged();
+        repaint();
+    };
     timeline.onViewChanged = [this] { layoutHeaders(); };
     app.onProjectChanged = [this] { projectChanged(); };
     projectChanged();
@@ -36,6 +47,7 @@ MainComponent::~MainComponent()
     juce::MenuBarModel::setMacMainMenu(nullptr);
 #endif
     app.onProjectChanged = nullptr;
+    transport.onRecordingChanged = nullptr;
 }
 
 void MainComponent::closeDialogs()
@@ -70,7 +82,10 @@ void MainComponent::projectChanged()
         }
     }
     for (size_t i = 0; i < tracks.size(); ++i)
+    {
         headers[i]->update(tracks[i]);
+        headers[i]->setEnabled(! app.isRecording());
+    }
 
     // Drop selection entries for clips that no longer exist.
     std::set<juce::String> ids;

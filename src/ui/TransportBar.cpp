@@ -145,6 +145,12 @@ void TransportBar::refresh()
     const bool rec = app.isRecording();
     if (rec && audioWindow != nullptr)
         closeDialogs(); // device changes are not allowed while recording
+    if (rec != wasRecording)
+    {
+        wasRecording = rec;
+        if (onRecordingChanged)
+            onRecordingChanged(rec);
+    }
     recButton.setToggleState(rec, juce::dontSendNotification);
     bpmField.setEnabled(! rec);
     beatsBox.setEnabled(! rec);

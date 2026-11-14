@@ -18,6 +18,7 @@ public:
     TimelineView(AppController&, TimelineState&);
     ~TimelineView() override;
 
+    void recordingStarted() { cancelDrag(); draggingRuler = selecting = false; } // drops any drag in progress
     void projectChanged(); // call after the project/pool changed
     TimelineMapping& mapping() { return map; }
     int getViewY() const { return viewY; }
