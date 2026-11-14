@@ -18,7 +18,8 @@ constexpr float kConfidentThreshold = 2.0f;
 
 // Finds `lag` such that target[n] ≈ ±reference[n - lag], searching |lag| <= maxLag.
 // Coarse GCC-PHAT at ~8 kHz, refined at full rate with normalised cross-correlation.
-// progress(0..1) is called repeatedly; returning false cancels (nullopt, error "Cancelled").
+// progress(0..1) is called repeatedly; returning false cancels (nullopt, error "Cancelled"). It is asked between
+// the transforms and every few thousand samples inside the other passes, and never again once it has returned false.
 std::optional<OffsetResult> findOffset(const std::vector<float>& reference, const std::vector<float>& target,
                                        SamplePos maxLag, double sampleRate,
                                        const std::function<bool(float)>& progress, juce::String& error);
