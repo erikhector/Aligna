@@ -7,7 +7,7 @@ if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin")
   set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "macOS architectures")
   set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version")
 endif()
-project(Aligna VERSION 0.2.1 LANGUAGES C CXX)
+project(Aligna VERSION 0.3.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -18,19 +18,20 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 endif()
 
 include(FetchContent)
+# Dependencies are pinned to commit hashes (a tag can be moved); the comment names the release each one is.
 set(FETCHCONTENT_QUIET OFF)
 FetchContent_Declare(JUCE
   GIT_REPOSITORY https://github.com/juce-framework/JUCE.git
-  GIT_TAG 8.0.4
+  GIT_TAG 51d11a2be6d5c97ccf12b4e5e827006e19f0555a # 8.0.4
   GIT_SHALLOW ON)
 FetchContent_Declare(Catch2
   GIT_REPOSITORY https://github.com/catchorg/Catch2.git
-  GIT_TAG v3.7.1
+  GIT_TAG fa43b77429ba76c462b1898d6cd2f2d7a9416b14 # v3.7.1
   GIT_SHALLOW ON)
 # Rubber Band (GPL-2.0-or-later): no CMake build, we compile its single-file unit into aligna_core.
 FetchContent_Declare(rubberband
   GIT_REPOSITORY https://github.com/breakfastquay/rubberband.git
-  GIT_TAG v4.0.0
+  GIT_TAG 1d95888bec3ae0a17c0c4af791810d5a63f6bc35 # v4.0.0
   GIT_SHALLOW ON)
 # LAME 3.100 (LGPL): MP3 encoder, only libmp3lame/*.c is built (see lame_enc below).
 FetchContent_Declare(lame
@@ -47,7 +48,7 @@ set(ALIGNA_JUCE_DEFS
   JUCE_STRICT_REFCOUNTEDPOINTER=1
   JUCE_DISPLAY_SPLASH_SCREEN=0
   JUCE_APPLICATION_NAME_STRING="Aligna"
-  JUCE_APPLICATION_VERSION_STRING="0.2.1")
+  JUCE_APPLICATION_VERSION_STRING="0.3.0")
 
 # ---------------------------------------------------------------------------
 # aligna_core: static library. Later tasks append files to the target_sources

@@ -10,5 +10,5 @@ TEST_CASE("smoke")
 
 TEST_CASE("core links juce and exposes version")
 {
-    REQUIRE(juce::String(aligna::versionString()) == "0.2.1");
+    REQUIRE(juce::String(aligna::versionString()) == "0.3.0");
 }

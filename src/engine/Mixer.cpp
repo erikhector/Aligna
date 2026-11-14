@@ -16,19 +16,40 @@ std::shared_ptr<const MixSnapshot> makeSnapshot(const Project& p, const SourcePo
                          [](const Clip& a, const Clip& b) { return a.start < b.start; });
         for (auto& c : t.clips)
         {
-            AudioData d;
+            StretchedAudio d;
             const auto* s = findSource(snap->project, c.sourceId);
             const auto key = bufferKey(c);
-            if (s != nullptr && ! s->missing)
-                d = nearlyEqual(c.stretch, 1.0) ? pool.get(c.sourceId) : cache.get(key);
-            if (d != nullptr)
-                snap->audio[key] = d;
-            else if (s != nullptr && ! s->missing && cache.hasFailed(key))
-                snap->failedStretch.insert(key);
-            snap->clipAudio[ti].push_back(d.get()); // owned by snap->audio
+            const bool present = s != nullptr && ! s->missing;
+            const bool stretched = ! nearlyEqual(c.stretch, 1.0);
+            if (present)
+                d = stretched ? cache.find(key) : StretchedAudio { pool.get(c.sourceId), 0 };
+            if (d.data != nullptr)
+            {
+                snap->audio[key] = d.data;
+                if (d.start != 0)
+                    snap->audioStart[key] = d.start;
+            }
+            if (present && stretched && ! cache.covers(c))
+            {
+                if (cache.hasFailed(key))
+                    snap->failedStretch.insert(key);
+                else if (d.data != nullptr)
+                    snap->partialStretch.insert(key);
+            }
+            snap->clipAudio[ti].push_back({ d.data.get(), d.start }); // the buffer is owned by snap->audio
         }
     }
     return snap;
+}
+
+ClipBuffer clipBufferFor(const MixSnapshot& s, const Clip& clip)
+{
+    const auto key = bufferKey(clip);
+    const auto it = s.audio.find(key);
+    if (it == s.audio.end() || it->second == nullptr)
+        return {};
+    const auto start = s.audioStart.find(key);
+    return { it->second.get(), start == s.audioStart.end() ? 0 : start->second };
 }
 
 namespace
@@ -37,30 +58,31 @@ struct TrackCtx
 {
     const MixSnapshot* snap;
     const Track* track;
-    const std::vector<const juce::AudioBuffer<float>*>* buffers; // resolved per clip, or nullptr
+    const std::vector<ClipBuffer>* buffers; // resolved per clip, or nullptr
     float trackGain, pan;
     SamplePos blockStart;
     juce::AudioBuffer<float>* out;
     int offset;
 };
 
-// Allocation-free: never builds a key string on the audio thread.
-const juce::AudioBuffer<float>* clipBuffer(const TrackCtx& c, const Clip& clip, int idx)
+// Allocation-free: never builds a key string on the audio thread. Snapshots from makeSnapshot take the first branch;
+// the map search is only for hand-built ones.
+ClipBuffer clipBuffer(const TrackCtx& c, const Clip& clip, int idx)
 {
     if (c.buffers != nullptr)
         return (*c.buffers)[static_cast<size_t>(idx)];
     if (! nearlyEqual(clip.stretch, 1.0))
-        return nullptr;
+        return {};
     auto it = c.snap->audio.find(clip.sourceId);
-    return it == c.snap->audio.end() ? nullptr : it->second.get();
+    return { it == c.snap->audio.end() ? nullptr : it->second.get(), 0 };
 }
 
 void renderClipRange(const TrackCtx& c, const Clip& clip, int idx, SamplePos a, SamplePos b)
 {
-    const auto* buf = clipBuffer(c, clip, idx);
-    if (buf == nullptr)
+    const auto cb = clipBuffer(c, clip, idx);
+    if (cb.buffer == nullptr)
         return;
-    const auto& src = *buf;
+    const auto& src = *cb.buffer;
     const int srcCh = src.getNumChannels();
     if (srcCh < 1)
         return;
@@ -69,9 +91,11 @@ void renderClipRange(const TrackCtx& c, const Clip& clip, int idx, SamplePos a, 
     // R6: clamp the read range to the decoded buffer.
     SamplePos lo = juce::jmax(a, clip.start);
     SamplePos hi = juce::jmin(b, clip.start + clip.length);
-    // source index = sourceOffset + (t - clip.start) must lie in [0, srcLen)
-    lo = juce::jmax(lo, clip.start - clip.sourceOffset);
-    hi = juce::jmin(hi, clip.start - clip.sourceOffset + srcLen);
+    // buffer index = sourceOffset + (t - clip.start) - bufStart must lie in [0, srcLen); bufStart is not 0 for a
+    // stretched buffer that holds only part of the source, and what lies outside it is silent.
+    const SamplePos bufOrigin = clip.start - clip.sourceOffset + cb.start; // timeline pos of buffer index 0
+    lo = juce::jmax(lo, bufOrigin);
+    hi = juce::jmin(hi, bufOrigin + srcLen);
     if (lo >= hi)
         return;
 
@@ -110,7 +134,7 @@ void renderClipRange(const TrackCtx& c, const Clip& clip, int idx, SamplePos a, 
             if (fromEnd < clip.fadeOut)
                 fade = juce::jmin(fade, juce::jlimit(0.0, 1.0, static_cast<double>(fromEnd) / static_cast<double>(clip.fadeOut)));
         }
-        const auto si = static_cast<int>(clip.sourceOffset + i);
+        const auto si = static_cast<int>(t - bufOrigin);
         const auto oi = c.offset + static_cast<int>(t - c.blockStart);
         const auto f = static_cast<float>(fade);
         ol[oi] += sl[si] * gl * f;

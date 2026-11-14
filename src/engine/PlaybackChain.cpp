@@ -95,19 +95,25 @@ void PlaybackChain::audioDeviceStopped()
     player.audioDeviceStopped();
 }
 
+void PlaybackChain::startArmed() noexcept
+{
+    // The message thread may have stopped (disarm() saw no arm, then engine.stop()) since consumeArm(). The
+    // engine decides atomically: the start applies only to the transport state prepareStart() left, so a
+    // command issued after arming wins, and then neither playback nor the take begins.
+    if (!engine.startFromAudioThread())
+        return;
+    resampler.flushBuffers(); // only this thread takes its callbackLock while the device runs
+    if (auto* r = recorder.load(std::memory_order_acquire))
+        r->begin();
+}
+
 void PlaybackChain::audioDeviceIOCallbackWithContext(const float* const* in, int numIn, float* const* out,
                                                      int numOut, int n,
                                                      const juce::AudioIODeviceCallbackContext& ctx)
 {
     auto* r = recorder.load(std::memory_order_acquire);
-    // Acquire pairs with armRecording's release: the engine's prepareStart() position is visible here.
-    if (armed.load(std::memory_order_relaxed) && armed.exchange(false, std::memory_order_acq_rel))
-    {
-        resampler.flushBuffers(); // only this thread takes its callbackLock while the device runs
-        if (r != nullptr)
-            r->begin();
-        engine.startFromAudioThread();
-    }
+    if (consumeArm())
+        startArmed();
     if (r != nullptr)
         r->process(in, numIn, n);
     player.audioDeviceIOCallbackWithContext(in, numIn, out, numOut, n, ctx);

@@ -70,7 +70,7 @@ void TimelineView::syncThumbnails()
 {
     const auto& proj = app.history().current();
     std::set<juce::String> live;
-    auto ensure = [&](const juce::String& key, const AudioData& data) {
+    auto ensure = [&](const juce::String& key, const AudioData& data, SamplePos start) {
         auto it = thumbs.find(key);
         if (!data || data->getNumSamples() == 0)
         {
@@ -83,19 +83,21 @@ void TimelineView::syncThumbnails()
             return;
         Thumb t;
         t.data = data;
+        t.start = start;
         t.thumb = std::make_unique<juce::AudioThumbnail>(64, formats, thumbCache);
         t.thumb->reset(data->getNumChannels(), proj.sampleRate, data->getNumSamples());
         t.thumb->addBlock(0, *data, 0, data->getNumSamples());
         thumbs[key] = std::move(t);
     };
     for (auto& src : proj.sources)
-        ensure(src.id, app.pool().get(src.id));
+        ensure(src.id, app.pool().get(src.id), 0);
     for (auto& t : proj.tracks)
         for (auto& c : t.clips)
             if (!nearlyEqual(c.stretch, 1.0))
             {
                 const auto key = bufferKey(c);
-                ensure(key, app.stretchCache().get(key));
+                const auto stretched = app.stretchCache().find(key);
+                ensure(key, stretched.data, stretched.start);
             }
     for (auto it = thumbs.begin(); it != thumbs.end();)
         it = live.count(it->first) ? std::next(it) : thumbs.erase(it);
@@ -381,10 +383,11 @@ void TimelineView::paintTrack(juce::Graphics& g, const Track& track, int index, 
         const auto* src = findSource(proj, c.sourceId);
         const bool missing = src == nullptr || src->missing || app.pool().get(c.sourceId) == nullptr;
 
-        // A stretched clip whose buffer is not there (still rendering, or the render failed) is silent: say so.
+        // A stretched clip whose buffer is not there, or lacks part of the clip (still rendering, or the render
+        // failed), is silent there: say so.
         const bool previewed = preview && drag.mode == DragMode::Stretch && c.id == drag.clipId;
         const bool stretching = !missing && !previewed && !nearlyEqual(c.stretch, 1.0)
-                                && app.stretchCache().get(bufferKey(c)) == nullptr;
+                                && ! app.stretchCache().covers(c);
 
         for (int pass = 0; pass < 2; ++pass)
         {
@@ -467,7 +470,12 @@ void TimelineView::paintWaveform(juce::Graphics& g, const Clip& c, juce::Rectang
     }
     if (it == thumbs.end() || !(k > 0.0))
         return;
-    const auto srcPos = [k](SamplePos stretchedPos) { return (SamplePos) std::llround((double) stretchedPos / k); };
+    // Index into the drawn buffer of a position in the clip's stretched source. The clip's own buffer may hold only
+    // part of that source, from `base` on; what lies outside the buffer is not drawn.
+    const SamplePos base = it->second.start;
+    const auto srcPos = [k, base](SamplePos stretchedPos) {
+        return (SamplePos) std::llround((double) stretchedPos / k) - base;
+    };
     const auto& buf = *it->second.data;
     const int nch = buf.getNumChannels();
     const int vis0 = std::max({ r.getX(), clip.getX(), 0 }), vis1 = std::min({ r.getRight(), clip.getRight(), getWidth() });
@@ -502,6 +510,8 @@ void TimelineView::paintWaveform(juce::Graphics& g, const Clip& c, juce::Rectang
             {
                 SamplePos a = srcPos(c.sourceOffset + (map.toSample(x) - c.start));
                 SamplePos b = srcPos(c.sourceOffset + (map.toSample(x + 1) - c.start));
+                if (std::max(b, a + 1) <= 0)
+                    continue; // before the buffer: nothing to draw
                 a = std::clamp<SamplePos>(a, 0, len);
                 b = std::clamp<SamplePos>(std::max(b, a + 1), 0, len);
                 if (b <= a)
@@ -519,13 +529,16 @@ void TimelineView::paintWaveform(juce::Graphics& g, const Clip& c, juce::Rectang
         {
             // Sub-pixel zoom: sample values as points joined by lines.
             const SamplePos sA = std::max<SamplePos>(0, srcPos(c.sourceOffset + (map.toSample(vis0) - c.start)) - 1);
+            const auto timelineOf = [&](SamplePos s) {
+                return c.start + (SamplePos) std::llround((double) (s + base) * k) - c.sourceOffset;
+            };
             const SamplePos sB = std::min<SamplePos>(std::min(len, srcPos(c.sourceOffset + c.length)),
                                                      srcPos(c.sourceOffset + (map.toSample(vis1) - c.start)) + 2);
             juce::Path path;
             bool first = true;
             for (SamplePos s = sA; s < sB; ++s)
             {
-                const float x = (float) map.toX(c.start + (SamplePos) std::llround((double) s * k) - c.sourceOffset);
+                const float x = (float) map.toX(timelineOf(s));
                 const float y = mid - d[s] * half;
                 if (first) { path.startNewSubPath(x, y); first = false; }
                 else path.lineTo(x, y);
@@ -534,7 +547,7 @@ void TimelineView::paintWaveform(juce::Graphics& g, const Clip& c, juce::Rectang
             if (spp < 0.25)
                 for (SamplePos s = sA; s < sB; ++s)
                 {
-                    const float x = (float) map.toX(c.start + (SamplePos) std::llround((double) s * k) - c.sourceOffset);
+                    const float x = (float) map.toX(timelineOf(s));
                     g.fillEllipse(x - 2.0f, mid - d[s] * half - 2.0f, 4.0f, 4.0f);
                 }
         }
