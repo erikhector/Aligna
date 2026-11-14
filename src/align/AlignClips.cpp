@@ -71,7 +71,9 @@ std::optional<ClipAlignment> computeAlignment(const MixSnapshot& s, const juce::
             continue;
         if (! nearlyEqual(c->stretch, 1.0) && s.audio.count(bufferKey(*c)) == 0)
         {
-            error = juce::String::fromUTF8("Clip is still stretching \xe2\x80\x94 try again in a moment");
+            error = s.failedStretch.count(bufferKey(*c)) != 0
+                        ? juce::String("Clip could not be stretched, so it has no audio to compare")
+                        : juce::String::fromUTF8("Clip is still stretching \xe2\x80\x94 try again in a moment");
             return std::nullopt;
         }
     }
@@ -102,7 +104,14 @@ std::optional<ClipAlignment> computeAlignment(const MixSnapshot& s, const juce::
     if (!offset)
         return std::nullopt;
 
-    return ClipAlignment { std::max<SamplePos>(0, tgt->start - offset->lag), offset->confidence,
-                           offset->polarityInverted };
+    // Not clamped to 0: a clamped start would be a wrong alignment reported with full confidence. A start before
+    // the project start is kept negative and applied by trimming the clip's head (see ClipAlignment).
+    const SamplePos newStart = tgt->start - offset->lag;
+    if (newStart + tgt->length <= 0)
+    {
+        error = "Aligned clip would lie entirely before the beginning of the project";
+        return std::nullopt;
+    }
+    return ClipAlignment { newStart, offset->confidence, offset->polarityInverted };
 }
 } // namespace aligna
