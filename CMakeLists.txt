@@ -170,6 +170,7 @@ add_executable(aligna_tests
   tests/PlaybackEngineTest.cpp
   tests/PlaybackChainTest.cpp
   tests/RecorderTest.cpp
+  tests/RecordLoopbackTest.cpp
   tests/TimelineMappingTest.cpp
   tests/DragMathTest.cpp
   tests/AlignTest.cpp
