@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 #include "edit/RecordTiming.h"
+#include <limits>
 
 using namespace aligna;
 
@@ -33,4 +34,16 @@ TEST_CASE("nextTakeName", "[record]") {
 }
 TEST_CASE("clampLatencyOffsetMs", "[record]") {
     REQUIRE(clampLatencyOffsetMs(-900) == -500.0); REQUIRE(clampLatencyOffsetMs(12.5) == 12.5); REQUIRE(clampLatencyOffsetMs(700) == 500.0);
+}
+TEST_CASE("clampLatencyOffsetMs maps non-finite values to 0", "[record]") {
+    REQUIRE(clampLatencyOffsetMs(std::numeric_limits<double>::quiet_NaN()) == 0.0);
+    REQUIRE(clampLatencyOffsetMs(std::numeric_limits<double>::infinity()) == 0.0);
+    REQUIRE(clampLatencyOffsetMs(-std::numeric_limits<double>::infinity()) == 0.0);
+}
+TEST_CASE("nextTakeName ignores numbers that would overflow", "[record]") {
+    Project p;
+    for (auto n : { "Take 2147483647", "Take 99999999999999999999", "Take 0000000000007", "Take 5" }) { Track t; t.name = n; p.tracks.push_back(t); }
+    REQUIRE(nextTakeName(p) == "Take 6");
+    Track t; t.name = "Take 999999999"; p.tracks.push_back(t); // the largest number that counts
+    REQUIRE(nextTakeName(p) == "Take 1000000000");
 }
