@@ -21,6 +21,11 @@ public:
     void pause();
     void stop(); // pause + return to the position where play() was last called
     void setPosition(SamplePos);
+    // Message thread: pause, then position = play start = p. Pair with startFromAudioThread() so playback of p
+    // begins in a known device callback.
+    void prepareStart(SamplePos p);
+    // Audio thread: start playing from the current position (no other state touched).
+    void startFromAudioThread() noexcept { playing.store(true); }
     SamplePos getPosition() const { return position.load(); }
     bool isPlaying() const { return playing.load(); }
 

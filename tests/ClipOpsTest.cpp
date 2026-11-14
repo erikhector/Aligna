@@ -138,3 +138,23 @@ TEST_CASE("ClipOps fades, gain, delete, removeTrack", "[ClipOps]")
     REQUIRE(deleteClip(f.p, f.id));
     REQUIRE_FALSE(deleteClip(f.p, f.id));
 }
+
+TEST_CASE("ClipOps addTakeTrack places the clip", "[ClipOps]")
+{
+    Project p;
+    SourceInfo s;
+    s.id = "take";
+    s.path = "t.wav";
+    s.length = 500000;
+    s.numChannels = 1;
+    auto id = addTakeTrack(p, s, "Take 1", { 200000, 96480, 403520 });
+    REQUIRE(p.tracks.size() == 1);
+    CHECK(p.tracks[0].name == "Take 1");
+    auto& c = *findClip(p, id);
+    CHECK(c.start == 200000);
+    CHECK(c.sourceOffset == 96480);
+    CHECK(c.length == 403520);
+    CHECK(c.stretch == 1.0);
+    CHECK(c.gainDb == 0.0f);
+    CHECK(p.sources.size() == 1);
+}

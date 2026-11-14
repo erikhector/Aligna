@@ -36,6 +36,13 @@ void PlaybackEngine::stop()
 
 void PlaybackEngine::setPosition(SamplePos p) { position.store(std::max<SamplePos>(0, p)); }
 
+void PlaybackEngine::prepareStart(SamplePos p)
+{
+    pause();
+    setPosition(p);
+    playStart = position.load();
+}
+
 void PlaybackEngine::getNextAudioBlock(const juce::AudioSourceChannelInfo& info)
 {
     info.clearActiveBufferRegion();

@@ -160,3 +160,33 @@ TEST_CASE("PlaybackEngine seek during audio block is not lost", "[engine]")
     audio.join();
     REQUIRE(lost == 0);
 }
+
+TEST_CASE("prepareStart then startFromAudioThread plays from p; stop returns to p", "[engine]")
+{
+    PlaybackEngine e;
+    auto snap = makeSnap(0.5f);
+    e.setSnapshot(snap);
+    e.setPosition(50);
+    e.play();
+    e.prepareStart(1000);
+    REQUIRE_FALSE(e.isPlaying());
+    REQUIRE(e.getPosition() == 1000);
+
+    juce::AudioBuffer<float> a(2, 512), expect(2, 512);
+    pull(e, a); // not started yet: silent, no advance
+    REQUIRE(e.getPosition() == 1000);
+    REQUIRE_THAT(a.getMagnitude(0, 512), WithinAbs(0.0, 1e-9));
+
+    e.startFromAudioThread();
+    REQUIRE(e.isPlaying());
+    pull(e, a);
+    REQUIRE(e.getPosition() == 1512);
+    expect.clear();
+    renderMix(*snap, 1000, expect, 0, 512);
+    for (int i = 0; i < 512; ++i)
+        REQUIRE_THAT(a.getSample(0, i), WithinAbs(expect.getSample(0, i), 1e-6));
+
+    e.stop();
+    REQUIRE_FALSE(e.isPlaying());
+    REQUIRE(e.getPosition() == 1000);
+}

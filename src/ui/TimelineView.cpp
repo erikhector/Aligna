@@ -113,7 +113,7 @@ void TimelineView::projectChanged()
 
 int TimelineView::maxViewY() const
 {
-    const int content = (int) app.history().current().tracks.size() * trackHeight;
+    const int content = ((int) app.history().current().tracks.size() + (app.isRecording() ? 1 : 0)) * trackHeight; // + the take lane
     return std::max(0, content - (getHeight() - rulerHeight));
 }
 
@@ -160,6 +160,8 @@ void TimelineView::timerCallback()
         }
     }
     const double x = map.toX(pos);
+    if (app.isRecording())
+        repaint(); // the growing red take bar
     if (std::abs(x - lastPlayheadX) > 1.0e-6)
     {
         repaintColumn(lastPlayheadX);
@@ -186,6 +188,15 @@ void TimelineView::paint(juce::Graphics& g)
             if (top + trackHeight < clip.getY() || top > clip.getBottom())
                 continue;
             paintTrack(g, proj.tracks[(size_t) i], i, clip);
+        }
+
+        if (app.isRecording())
+        {
+            const int top = rulerHeight + (int) proj.tracks.size() * trackHeight - viewY;
+            const float x1 = (float) map.toX(app.recordingStart());
+            const float x2 = (float) map.toX(std::max(app.recordingStart(), app.engine().getPosition()));
+            g.setColour(juce::Colour(0xffe04040).withAlpha(0.6f));
+            g.fillRect(x1, (float) top + 8.0f, std::max(0.0f, x2 - x1), (float) trackHeight - 16.0f);
         }
 
         if (state.timeSelection)
@@ -600,7 +611,12 @@ void TimelineView::cancelDrag()
         repaint();
 }
 
-void TimelineView::setPlayhead(SamplePos s) { app.engine().setPosition(std::max<SamplePos>(0, s)); }
+void TimelineView::setPlayhead(SamplePos s)
+{
+    if (app.isRecording())
+        return; // the transport must not move while recording
+    app.engine().setPosition(std::max<SamplePos>(0, s));
+}
 
 void TimelineView::mouseDown(const juce::MouseEvent& e)
 {
@@ -608,6 +624,8 @@ void TimelineView::mouseDown(const juce::MouseEvent& e)
     draggingRuler = false;
     selecting = false;
     cancelDrag();
+    if (app.isRecording())
+        return; // no edits, selections or playhead moves while recording
     if (! e.mods.isLeftButtonDown()) // only the left button starts drags / ruler actions
     {
         if (e.mods.isPopupMenu() && e.y >= rulerHeight)
@@ -775,6 +793,8 @@ void TimelineView::mouseDrag(const juce::MouseEvent& e)
 {
     mouseX = e.x;
     mouseY = e.y;
+    if (app.isRecording())
+        return;
     if (draggingRuler)
     {
         const auto s = std::max<SamplePos>(0, map.toSample(e.x));
@@ -831,7 +851,7 @@ void TimelineView::mouseUp(const juce::MouseEvent&)
 
 void TimelineView::mouseDoubleClick(const juce::MouseEvent& e)
 {
-    if (e.y < rulerHeight)
+    if (app.isRecording() || e.y < rulerHeight)
         return;
     const auto h = aligna::hitTest(app.history().current(), map, trackHeight, { (float) e.x, (float) (e.y - rulerHeight + viewY) });
     if (h.zone != HitZone::None)
@@ -972,6 +992,8 @@ bool TimelineView::deleteSelected()
 
 bool TimelineView::keyPressed(const juce::KeyPress& k)
 {
+    if (app.isRecording())
+        return false; // MainComponent handles Space and R; every edit key is ignored
     const auto mods = k.getModifiers();
     const int code = k.getKeyCode();
     if (code == juce::KeyPress::escapeKey && drag.mode != DragMode::None)

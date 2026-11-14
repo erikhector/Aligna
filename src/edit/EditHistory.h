@@ -26,6 +26,12 @@ public:
     bool isDirty() const;
     void markSaved();
 
+    // While locked, perform/undo/redo refuse (return false, change nothing).
+    void setLocked(bool l) { locked = l; }
+    bool isLocked() const { return locked; }
+    // Applies fn to every state. No new step; cur/savedIndex/dirty unchanged; no onChange.
+    void rewriteAllStates(const std::function<void(Project&)>& fn);
+
     std::function<void()> onChange;
 
 private:
@@ -38,6 +44,7 @@ private:
 
     std::vector<Entry> states;
     std::size_t cur = 0;
+    bool locked = false;
     long long savedIndex = 0; // -1: saved state no longer reachable
 };
 } // namespace aligna

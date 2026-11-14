@@ -1,6 +1,7 @@
 #include "ui/TransportBar.h"
 #include "model/Grid.h"
 #include "edit/ClipOps.h"
+#include "ui/AudioSettingsPanel.h"
 #include <cmath>
 
 namespace aligna
@@ -18,7 +19,7 @@ juce::String formatPosition(SamplePos pos, const Project& p)
 
 TransportBar::TransportBar(AppController& a, TimelineState& st) : app(a), tlState(st)
 {
-    for (auto* c : std::initializer_list<juce::Component*> { &playButton, &stopButton, &audioButton,
+    for (auto* c : std::initializer_list<juce::Component*> { &playButton, &stopButton, &recButton, &audioButton, &recLabel, &meter,
                                                               &position, &bpmLabel, &bpmField, &snapButton, &gridBox,
                                                               &sigLabel, &beatsBox, &slashLabel, &unitBox })
     {
@@ -57,17 +58,76 @@ TransportBar::TransportBar(AppController& a, TimelineState& st) : app(a), tlStat
     unitBox.setTooltip("Beat unit (note value that gets one beat)");
     beatsBox.onChange = [this] { commitTimeSignature(); };
     unitBox.onChange = [this] { commitTimeSignature(); };
+    recButton.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff7a2a2a));
+    recButton.setColour(juce::TextButton::buttonOnColourId, juce::Colour(0xffd9302f));
+    recButton.setColour(juce::TextButton::textColourOffId, juce::Colour(0xffff8a8a));
+    recButton.setTooltip("Record a new take (R)");
+    recButton.onClick = [this] { toggleRecord(); };
+    recLabel.setColour(juce::Label::textColourId, juce::Colour(0xffff5050));
+    recLabel.setFont(juce::FontOptions(15.0f, juce::Font::bold));
+    recLabel.setVisible(false);
+    meter.setVisible(false);
+    app.onRecordingStopped = [safe = juce::Component::SafePointer<TransportBar>(this)](juce::String msg) {
+        if (safe != nullptr)
+        {
+            safe->refresh();
+            safe->showRecordingMessage(msg);
+        }
+    };
     playButton.onClick = [this] { togglePlay(); };
-    stopButton.onClick = [this] { app.engine().stop(); refresh(); };
+    stopButton.onClick = [this] {
+        if (app.isRecording())
+        {
+            toggleRecord();
+            return;
+        }
+        app.engine().stop();
+        refresh();
+    };
     audioButton.onClick = [this] { showAudioSettings(); };
     refresh();
     startTimerHz(30);
 }
 
-TransportBar::~TransportBar() { stopTimer(); }
+TransportBar::~TransportBar()
+{
+    stopTimer();
+    app.onRecordingStopped = nullptr;
+}
+
+void TransportBar::showRecordingMessage(const juce::String& msg)
+{
+    if (msg.isNotEmpty())
+        juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon, "Recording", msg);
+}
+
+void TransportBar::toggleRecord()
+{
+    if (app.isRecording())
+    {
+        showRecordingMessage(app.stopRecording());
+        refresh();
+        return;
+    }
+    juce::Component::SafePointer<TransportBar> safe(this);
+    app.startRecording([safe](juce::String error) {
+        if (safe == nullptr)
+            return;
+        // An empty error does not always mean started (a permission prompt may be pending): isRecording() decides.
+        if (error.isNotEmpty())
+            safe->showRecordingMessage(error);
+        safe->refresh();
+    });
+    refresh();
+}
 
 void TransportBar::togglePlay()
 {
+    if (app.isRecording())
+    {
+        toggleRecord();
+        return;
+    }
     if (app.engine().isPlaying())
         app.engine().pause();
     else
@@ -81,6 +141,34 @@ void TransportBar::refresh()
     position.setText(formatPosition(app.engine().getPosition(), p), juce::dontSendNotification);
     snapButton.setToggleState(tlState.snapEnabled, juce::dontSendNotification); // G key toggles it too
     playButton.setButtonText(app.engine().isPlaying() ? "Pause" : "Play");
+
+    const bool rec = app.isRecording();
+    if (rec && audioWindow != nullptr)
+        closeDialogs(); // device changes are not allowed while recording
+    if (rec != wasRecording)
+    {
+        wasRecording = rec;
+        if (onRecordingChanged)
+            onRecordingChanged(rec);
+    }
+    recButton.setToggleState(rec, juce::dontSendNotification);
+    bpmField.setEnabled(! rec);
+    beatsBox.setEnabled(! rec);
+    unitBox.setEnabled(! rec);
+    audioButton.setEnabled(! rec);
+    recLabel.setVisible(rec);
+    if (rec)
+    {
+        const auto elapsed = std::max<SamplePos>(0, app.engine().getPosition() - app.recordingStart());
+        const auto secs = (long long) (elapsed / p.sampleRate);
+        recLabel.setText(juce::String::formatted("Recording %lld:%02lld", secs / 60, secs % 60), juce::dontSendNotification);
+    }
+    const bool showMeter = rec || audioWindow != nullptr;
+    meter.setVisible(showMeter);
+    const auto nowMs = juce::Time::getMillisecondCounterHiRes();
+    if (showMeter)
+        meter.push(app.inputPeak(), std::min(200.0, nowMs - lastMeterMs));
+    lastMeterMs = nowMs;
     // Follows the project (undo / open). Skipped while a menu is open so a popup is not disturbed.
     if (! beatsBox.isPopupActive() && beatsBox.getSelectedId() != p.beatsPerBar)
         beatsBox.setSelectedId(p.beatsPerBar, juce::dontSendNotification);
@@ -139,9 +227,7 @@ void TransportBar::showAudioSettings()
                 safe->closeDialogs();
         });
     });
-    auto* sel = new juce::AudioDeviceSelectorComponent(app.devices(), 0, 0, 2, 2, false, false, true, false);
-    sel->setSize(480, 360);
-    win->setContentOwned(sel, true);
+    win->setContentOwned(new AudioSettingsPanel(app), true);
     win->setUsingNativeTitleBar(true);
     win->centreAroundComponent(this, win->getWidth(), win->getHeight());
     win->setVisible(true);
@@ -156,12 +242,16 @@ void TransportBar::resized()
     playButton.setBounds(r.removeFromLeft(70));
     r.removeFromLeft(4);
     stopButton.setBounds(r.removeFromLeft(70));
+    r.removeFromLeft(4);
+    recButton.setBounds(r.removeFromLeft(60));
     r.removeFromLeft(12);
     snapButton.setBounds(r.removeFromLeft(60));
     r.removeFromLeft(4);
     gridBox.setBounds(r.removeFromLeft(80));
     r.removeFromLeft(12);
     audioButton.setBounds(r.removeFromRight(150));
+    r.removeFromRight(8);
+    meter.setBounds(r.removeFromRight(90).reduced(0, 12));
     r.removeFromRight(12);
     unitBox.setBounds(r.removeFromRight(56));
     slashLabel.setBounds(r.removeFromRight(14));
@@ -170,6 +260,7 @@ void TransportBar::resized()
     r.removeFromRight(12);
     bpmField.setBounds(r.removeFromRight(60));
     bpmLabel.setBounds(r.removeFromRight(40));
+    recLabel.setBounds(r.removeFromLeft(140));
     position.setBounds(r.reduced(8, 0));
 }
 } // namespace aligna

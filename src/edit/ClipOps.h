@@ -1,11 +1,13 @@
 #pragma once
 #include "model/Project.h"
+#include "edit/RecordTiming.h"
 #include <optional>
 
 namespace aligna
 {
 Clip* findClip(Project&, const juce::String& clipId, int* trackIndex = nullptr);
 juce::String addTrackWithClip(Project&, const SourceInfo&, const juce::String& trackName);
+juce::String addTakeTrack(Project&, const SourceInfo&, const juce::String& trackName, const TakePlacement&);
 bool moveClip(Project&, const juce::String& clipId, SamplePos newStart, int newTrackIndex);
 bool trimClipStart(Project&, const juce::String& clipId, SamplePos newStart);
 bool trimClipEnd(Project&, const juce::String& clipId, SamplePos newEnd);

@@ -60,13 +60,16 @@ target_sources(aligna_core PRIVATE
   src/edit/ClipOps.cpp
   src/edit/DragMath.cpp
   src/edit/StretchMath.cpp
+  src/edit/RecordTiming.cpp
   src/edit/EditHistory.cpp
   src/io/ProjectFile.cpp
   src/io/FileNaming.cpp
+  src/io/TakeFiles.cpp
   src/io/Mp3Encoder.cpp
   src/engine/Mixer.cpp
   src/engine/PlaybackChain.cpp
   src/engine/PlaybackEngine.cpp
+  src/engine/Recorder.cpp
   src/engine/SourcePool.cpp
   src/engine/Stretcher.cpp
   src/engine/StretchCache.cpp
@@ -131,10 +134,15 @@ target_link_libraries(aligna_core
 juce_add_gui_app(Aligna
   PRODUCT_NAME "Aligna"
   COMPANY_NAME "Aligna"
+  MICROPHONE_PERMISSION_ENABLED TRUE
+  MICROPHONE_PERMISSION_TEXT "Aligna uses audio input to record takes."
   VERSION ${PROJECT_VERSION})
 target_sources(Aligna PRIVATE
   src/app/Main.cpp
   src/app/AppController.cpp
+  src/app/AppSettings.cpp
+  src/ui/InputMeter.cpp
+  src/ui/AudioSettingsPanel.cpp
   src/ui/TransportBar.cpp
   src/ui/TrackHeader.cpp
   src/ui/TimelineView.cpp
@@ -142,6 +150,13 @@ target_sources(Aligna PRIVATE
   src/ui/ClipTempoDialog.cpp
   src/ui/MainComponent.cpp
 )
+# Microphone permission: AVFoundation on macOS, a trivial always-granted version elsewhere.
+if(APPLE)
+  target_sources(Aligna PRIVATE src/app/MicPermission_mac.mm)
+  target_link_libraries(Aligna PRIVATE "-framework AVFoundation")
+else()
+  target_sources(Aligna PRIVATE src/app/MicPermission.cpp)
+endif()
 target_compile_definitions(Aligna PRIVATE JUCE_STANDALONE_APPLICATION=1)
 target_link_libraries(Aligna
   PRIVATE
@@ -160,16 +175,20 @@ add_executable(aligna_tests
   tests/ClipOpsTest.cpp
   tests/EditHistoryTest.cpp
   tests/GridTest.cpp
+  tests/RecordTimingTest.cpp
   tests/ProjectFileTest.cpp
   tests/MixerTest.cpp
   tests/SourcePoolTest.cpp
   tests/PlaybackEngineTest.cpp
   tests/PlaybackChainTest.cpp
+  tests/RecorderTest.cpp
+  tests/RecordLoopbackTest.cpp
   tests/TimelineMappingTest.cpp
   tests/DragMathTest.cpp
   tests/AlignTest.cpp
   tests/AlignResultsTest.cpp
   tests/FileNamingTest.cpp
+  tests/TakeFilesTest.cpp
   tests/StretcherTest.cpp
   tests/StretchOpsTest.cpp
   tests/StretchCacheTest.cpp

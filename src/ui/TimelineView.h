@@ -18,6 +18,13 @@ public:
     TimelineView(AppController&, TimelineState&);
     ~TimelineView() override;
 
+    // Drops any drag in progress and closes the clip-tempo dialog (its OK would be refused while recording).
+    void recordingStarted()
+    {
+        cancelDrag();
+        draggingRuler = selecting = false;
+        tempoWindow.reset();
+    }
     void projectChanged(); // call after the project/pool changed
     TimelineMapping& mapping() { return map; }
     int getViewY() const { return viewY; }
