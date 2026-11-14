@@ -21,7 +21,10 @@ std::map<juce::String, juce::String> relocateTakes(const juce::File& from, const
 void applyRelocation(Project&, const std::map<juce::String, juce::String>&);
 // Recording stops below this much free space.
 constexpr juce::int64 kMinFreeRecordingBytes = 50 * 1024 * 1024;
-// True only when 0 < freeBytes < kMinFreeRecordingBytes. JUCE reports 0 when it cannot tell, so
-// freeBytes <= 0 means unknown and is not treated as full.
-bool isDiskAlmostFull(juce::int64 freeBytes);
+// True when freeBytes < kMinFreeRecordingBytes on a volume whose state is known. JUCE reports 0 free bytes both
+// for a full volume and when it cannot tell; it is "unknown" (not full) only if the total size is unknown
+// (<= 0) as well. Negative freeBytes is always unknown.
+bool isDiskAlmostFull(juce::int64 freeBytes, juce::int64 totalBytes);
+// The volume holding `folder` (which need not exist yet).
+bool isDiskAlmostFull(const juce::File& folder);
 } // namespace aligna
