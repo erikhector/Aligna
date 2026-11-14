@@ -16,8 +16,17 @@ void PlaybackEngine::setSnapshot(std::shared_ptr<const MixSnapshot> s)
         retired.push_back({ std::move(latest), now });
     latest = std::move(s);
     current.store(latest.get(), std::memory_order_release);
+    purgeRetired();
+}
 
-    std::erase_if(retired, [now](const Retired& r) { return (juce::uint32) (now - r.retiredAtMs) >= 500u; });
+bool PlaybackEngine::purgeRetired(bool waitForAll)
+{
+    auto age = [](const Retired& r) { return (juce::uint32) (juce::Time::getMillisecondCounter() - r.retiredAtMs); };
+    // The newest is at the back.
+    while (waitForAll && !retired.empty() && age(retired.back()) < retireMs)
+        juce::Thread::sleep((int) (retireMs - age(retired.back())));
+    std::erase_if(retired, [&age](const Retired& r) { return age(r) >= retireMs; });
+    return !retired.empty();
 }
 
 void PlaybackEngine::play()

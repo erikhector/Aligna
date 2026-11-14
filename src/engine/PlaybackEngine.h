@@ -13,9 +13,16 @@ public:
     PlaybackEngine() = default;
     ~PlaybackEngine() override;
 
-    // Message thread. The previous snapshot is retired and freed by a later setSnapshot call (>= 500 ms old)
-    // or by the destructor, so the audio thread never owns or destroys a snapshot.
+    // A retired snapshot is kept at least this long, so a device callback that was still rendering from it
+    // when it was replaced has finished before it is freed.
+    static constexpr juce::uint32 retireMs = 500;
+
+    // Message thread. The previous snapshot is retired and freed (once >= retireMs old) by a later setSnapshot
+    // or purgeRetired call, or by the destructor, so the audio thread never owns or destroys a snapshot.
     void setSnapshot(std::shared_ptr<const MixSnapshot>);
+    // Message thread. Frees the retired snapshots that are >= retireMs old; true if younger ones remain.
+    // With waitForAll, first sleeps (at most retireMs) until every retired snapshot is old enough.
+    bool purgeRetired(bool waitForAll = false);
 
     void play();
     void pause();
