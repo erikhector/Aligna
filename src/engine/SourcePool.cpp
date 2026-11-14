@@ -11,8 +11,15 @@ namespace
 {
 constexpr double maxSeconds = 2.0 * 60.0 * 60.0;
 
-// Resamples one channel so that output sample 0 corresponds to input time 0.
-std::vector<float> resampleChannel(const float* in, juce::int64 inLen, juce::int64 outLen, double speedRatio)
+// Frames read, and output samples resampled, between two progress calls: a cancel is noticed within one chunk.
+constexpr int readChunk = 1 << 17;
+constexpr juce::int64 resampleChunk = 16384;
+
+// Resamples one channel into `out` so that output sample 0 corresponds to input time 0.
+// onChunk(fraction of this channel) is called after every chunk; it may throw to abandon the decode.
+template <typename OnChunk>
+void resampleChannel(const float* in, juce::int64 inLen, float* out, juce::int64 outLen, double speedRatio,
+                     OnChunk&& onChunk)
 {
     const int latency = (int) juce::WindowedSincInterpolator::getBaseLatency();
     const juce::int64 needed = (juce::int64) std::ceil((double) outLen * speedRatio) + 4 * latency + 16;
@@ -20,21 +27,19 @@ std::vector<float> resampleChannel(const float* in, juce::int64 inLen, juce::int
     std::copy(in, in + inLen, padded.begin());
 
     juce::WindowedSincInterpolator interp;
-    std::vector<float> out((size_t) outLen);
     std::vector<float> scratch((size_t) latency);
 
     // Prime: run `latency` samples through at ratio 1 and discard, which compensates the filter delay.
     juce::int64 inPos = (juce::int64) interp.process(1.0, padded.data(), scratch.data(), latency);
 
     juce::int64 outPos = 0;
-    constexpr juce::int64 chunk = 16384;
     while (outPos < outLen)
     {
-        auto n = (int) std::min(chunk, outLen - outPos);
-        inPos += interp.process(speedRatio, padded.data() + inPos, out.data() + outPos, n);
+        auto n = (int) std::min(resampleChunk, outLen - outPos);
+        inPos += interp.process(speedRatio, padded.data() + inPos, out + outPos, n);
         outPos += n;
+        onChunk((double) outPos / (double) outLen);
     }
-    return out;
 }
 
 // True for the readers whose payload is plain PCM/float frames (JUCE's WAV and AIFF readers accept nothing else;
@@ -51,30 +56,27 @@ void zeroNonFinite(float* d, int n)
         if (! std::isfinite(d[i]))
             d[i] = 0.0f;
 }
-} // namespace
 
-SourcePool::SourcePool() { formats.registerBasicFormats(); }
-
-AudioData SourcePool::decode(const juce::File& file, double projectRate, juce::String& error)
+struct DecodeCancelled
 {
-    try
-    {
-        return decodeImpl(file, projectRate, error);
-    }
-    catch (const std::bad_alloc&)
-    {
-        error = "Not enough memory to load this file";
-        return nullptr;
-    }
-}
+};
 
-AudioData SourcePool::decodeImpl(const juce::File& file, double projectRate, juce::String& error)
+AudioData decodeImpl(const juce::File& file, double projectRate, juce::String& error, const DecodeProgress& progress)
 {
+    // Throws on cancel, so every buffer of the half-done decode is released on the way out.
+    auto report = [&progress](double fraction) {
+        if (progress && ! progress((float) juce::jlimit(0.0, 1.0, fraction)))
+            throw DecodeCancelled();
+    };
+    report(0.0);
     if (! file.existsAsFile())
     {
         error = "Could not open file";
         return nullptr;
     }
+    // A manager of its own: nothing is shared with the message thread or with another decode.
+    juce::AudioFormatManager formats;
+    formats.registerBasicFormats();
     std::unique_ptr<juce::AudioFormatReader> reader(formats.createReaderFor(file));
     if (reader == nullptr)
     {
@@ -125,13 +127,22 @@ AudioData SourcePool::decodeImpl(const juce::File& file, double projectRate, juc
         return nullptr;
     }
 
+    // Share of the progress taken by reading the file; the rest is the resampler, one equal part per channel.
+    const double readShare = resample ? 0.25 : 1.0;
     const int srcCh = (int) reader->numChannels;
     juce::AudioBuffer<float> raw(srcCh, fileLen);
-    if (! reader->read(&raw, 0, fileLen, 0, true, true))
+    for (int pos = 0; pos < fileLen;)
     {
-        error = "Could not open file";
-        return nullptr;
+        const int n = std::min(readChunk, fileLen - pos);
+        if (! reader->read(&raw, pos, n, pos, true, true))
+        {
+            error = "Could not open file";
+            return nullptr;
+        }
+        pos += n;
+        report(readShare * (double) pos / (double) fileLen);
     }
+    reader.reset();
     // Float files can carry NaN/Inf, which nothing downstream (device, export, alignment, LAME) expects.
     for (int c = 0; c < srcCh; ++c)
         zeroNonFinite(raw.getWritePointer(c), fileLen);
@@ -158,18 +169,54 @@ AudioData SourcePool::decodeImpl(const juce::File& file, double projectRate, juc
 
     auto result = std::make_shared<juce::AudioBuffer<float>>(outCh, (int) outLen);
     for (int c = 0; c < outCh; ++c)
-    {
-        auto o = resampleChannel(layout.getReadPointer(c), layout.getNumSamples(), outLen, fileRate / projectRate);
-        std::copy(o.begin(), o.end(), result->getWritePointer(c));
-    }
+        resampleChannel(layout.getReadPointer(c), layout.getNumSamples(), result->getWritePointer(c), outLen,
+                        fileRate / projectRate, [&](double f) {
+                            report(readShare + (1.0 - readShare) * ((double) c + f) / (double) outCh);
+                        });
     return result;
 }
+} // namespace
 
-std::optional<SourceInfo> SourcePool::import(const juce::File& file, double projectRate, juce::String& error)
+DecodedAudio SourcePool::decodeFile(const juce::File& file, double projectRate, const DecodeProgress& progress)
 {
-    auto data = decode(file, projectRate, error);
-    if (data == nullptr)
-        return std::nullopt;
+    DecodedAudio d;
+    try
+    {
+        d.audio = decodeImpl(file, projectRate, d.error, progress);
+    }
+    catch (const DecodeCancelled&)
+    {
+        d.cancelled = true;
+    }
+    catch (const std::bad_alloc&)
+    {
+        d.error = "Not enough memory to load this file";
+    }
+    return d;
+}
+
+bool DecodeBatch::run(const std::function<bool(int, float)>& progress)
+{
+    for (size_t i = 0; i < items.size(); ++i)
+    {
+        auto d = SourcePool::decodeFile(items[i].file, projectRate, [&progress, i](float f) {
+            return ! progress || progress((int) i, f);
+        });
+        if (d.cancelled)
+        {
+            for (auto& it : items)
+                it.audio = nullptr;
+            return false;
+        }
+        items[i].audio = std::move(d.audio);
+        items[i].error = std::move(d.error);
+    }
+    return true;
+}
+
+SourceInfo SourcePool::store(const juce::File& file, AudioData data)
+{
+    jassert(data != nullptr);
     SourceInfo info;
     info.id = newId();
     info.path = file.getFullPathName();
@@ -180,10 +227,8 @@ std::optional<SourceInfo> SourcePool::import(const juce::File& file, double proj
     return info;
 }
 
-bool SourcePool::load(SourceInfo& info, double projectRate)
+bool SourcePool::store(SourceInfo& info, AudioData data)
 {
-    juce::String error;
-    auto data = decode(juce::File(info.path), projectRate, error);
     if (data == nullptr)
     {
         info.missing = true;
@@ -197,6 +242,22 @@ bool SourcePool::load(SourceInfo& info, double projectRate)
     return true;
 }
 
+std::optional<SourceInfo> SourcePool::import(const juce::File& file, double projectRate, juce::String& error)
+{
+    auto d = decodeFile(file, projectRate);
+    if (d.audio == nullptr)
+    {
+        error = d.error;
+        return std::nullopt;
+    }
+    return store(file, std::move(d.audio));
+}
+
+bool SourcePool::load(SourceInfo& info, double projectRate)
+{
+    return store(info, decodeFile(juce::File(info.path), projectRate).audio);
+}
+
 AudioData SourcePool::get(const juce::String& id) const
 {
     auto it = buffers.find(id);
@@ -206,4 +267,9 @@ AudioData SourcePool::get(const juce::String& id) const
 void SourcePool::clear() { buffers.clear(); }
 
 void SourcePool::remove(const juce::String& id) { buffers.erase(id); }
+
+void SourcePool::retainOnly(const std::set<juce::String>& ids)
+{
+    std::erase_if(buffers, [&ids](const auto& b) { return ids.count(b.first) == 0; });
+}
 } // namespace aligna
