@@ -673,9 +673,24 @@ void TimelineView::mouseDown(const juce::MouseEvent& e)
                                              { (float) e.x, (float) (e.y - rulerHeight + viewY) });
             if (hit.zone != HitZone::None)
             {
+                // The menu acts on what was clicked: a clip outside the selection becomes the selection.
+                if (state.selectedClipIds.count(hit.clipId) == 0)
+                {
+                    state.selectedClipIds = { hit.clipId };
+                    repaint();
+                }
                 juce::PopupMenu m;
                 m.addItem(1, "Set as align reference", true, state.alignReferenceClipId == hit.clipId);
                 m.addItem(2, juce::String::fromUTF8("Clip tempo\xe2\x80\xa6"));
+                m.addSeparator();
+                juce::PopupMenu::Item split("Split at playhead");
+                split.itemID = 3;
+                split.shortcutKeyDescription = "S";
+                m.addItem(split);
+                juce::PopupMenu::Item del("Delete");
+                del.itemID = 4;
+                del.shortcutKeyDescription = "Del";
+                m.addItem(del);
                 juce::Component::SafePointer<TimelineView> safe(this);
                 m.showMenuAsync(juce::PopupMenu::Options(), [safe, id = hit.clipId](int r) {
                     if (safe == nullptr)
@@ -689,6 +704,15 @@ void TimelineView::mouseDown(const juce::MouseEvent& e)
                     {
                         safe->state.alignReferenceClipId = id;
                         safe->repaint();
+                    }
+                    // The project may have changed while the menu was up (a recording started, a load began).
+                    if ((r == 3 || r == 4) && ! safe->app.isRecording() && ! safe->app.isLoading()
+                        && safe->drag.mode == DragMode::None)
+                    {
+                        if (r == 3)
+                            safe->splitSelected();
+                        else
+                            safe->deleteSelected();
                     }
                     safe->grabKeyboardFocus(); // shortcuts keep working after the popup closes
                 });

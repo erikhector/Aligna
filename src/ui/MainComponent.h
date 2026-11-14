@@ -6,6 +6,7 @@
 #include "ui/TimelineView.h"
 #include "ui/TrackHeader.h"
 #include "ui/TransportBar.h"
+#include "ui/Updater.h"
 #include <juce_gui_basics/juce_gui_basics.h>
 
 namespace aligna
@@ -26,7 +27,7 @@ public:
     // that is still running. Called before shutdown.
     void closeDialogs();
 
-    // MenuBarModel. Menus: File, Edit.
+    // MenuBarModel. Menus: File, Edit, Help.
     juce::StringArray getMenuBarNames() override;
     juce::PopupMenu getMenuForIndex(int index, const juce::String& name) override;
     void menuItemSelected(int menuItemID, int topLevelMenuIndex) override;
@@ -37,11 +38,16 @@ public:
 
     TimelineState& timelineState() { return tlState; }
 
+    // Replaces the project with the one in the file (no unsaved-changes question); reports failures.
+    void openFile(const juce::File&);
+
 private:
-    enum MenuIds { menuUndo = 1, menuRedo, menuAlign, menuNew, menuOpen, menuSave, menuSaveAs, menuImport, menuExport, menuQuit };
+    enum MenuIds { menuUndo = 1, menuRedo, menuAlign, menuNew, menuOpen, menuSave, menuSaveAs, menuImport, menuExport, menuQuit,
+                   menuSplit, menuDelete, menuCheckUpdates };
     static constexpr int menuBarHeight = 24;
     juce::PopupMenu fileMenu();
     juce::PopupMenu editMenu();
+    juce::PopupMenu helpMenu();
     void importAndReport(const juce::Array<juce::File>&);
     // Decodes the load's audio on a background thread behind a modal progress window with Cancel, then (message
     // thread) runs beforeCommit unless cancelled, finishes the load in the controller and calls
@@ -66,7 +72,6 @@ private:
     void confirmOverwrite(const juce::File& chosen, const juce::File& target, std::function<void()> go);
     void doNew();
     void doOpen();
-    void openFile(const juce::File&); // replaces the project (no unsaved-changes question); reports failures
     void doExport();
     // allowSilentClips: the user accepted that clips whose stretch failed are exported silent.
     void startExport(const ExportSettings&, const juce::File&, bool allowSilentClips = false);
@@ -89,6 +94,7 @@ private:
     ExportSettings lastExport; // format + bitrate chosen last in this session, preselected next time
     bool promptActive = false;
     std::unique_ptr<juce::DialogWindow> alignWindow; // at most one, non-modal
+    Updater updater;
     std::unique_ptr<juce::MenuBarComponent> menuBar; // not used on macOS (native menu bar)
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainComponent)
 };

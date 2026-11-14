@@ -33,6 +33,10 @@ public:
     void setViewY(int y);
     std::function<void()> onViewChanged; // fired when vertical scroll changes (headers follow)
 
+    // The S and Delete keys, also offered by the Edit menu and the clip menu. False when no clip is selected.
+    bool splitSelected();  // at the playhead; selected clips the playhead does not cross are left alone
+    bool deleteSelected();
+
     void paint(juce::Graphics&) override;
     void mouseDown(const juce::MouseEvent&) override;
     void mouseDrag(const juce::MouseEvent&) override;
@@ -87,8 +91,6 @@ private:
     void updateDrag(const juce::MouseEvent&);
     void showGainPopup(const juce::MouseEvent&, const juce::String& clipId);
     bool nudgeSelected(bool right, const juce::ModifierKeys&);
-    bool splitSelected();
-    bool deleteSelected();
     void paintRuler(juce::Graphics&, juce::Rectangle<int> clip);
     void paintTrack(juce::Graphics&, const Track&, int index, juce::Rectangle<int> clip);
     void showClipTempo(const juce::String& clipId);

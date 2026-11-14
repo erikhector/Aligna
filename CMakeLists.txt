@@ -151,6 +151,7 @@ target_sources(Aligna PRIVATE
   src/ui/AlignDialog.cpp
   src/ui/ClipTempoDialog.cpp
   src/ui/MainComponent.cpp
+  src/ui/Updater.cpp
 )
 # Microphone permission: AVFoundation on macOS, a trivial always-granted version elsewhere.
 if(APPLE)
@@ -166,6 +167,7 @@ target_link_libraries(Aligna
     juce::juce_gui_basics
     juce::juce_gui_extra
     juce::juce_audio_utils
+    juce::juce_cryptography
     juce::juce_recommended_lto_flags)
 
 # ---------------------------------------------------------------------------

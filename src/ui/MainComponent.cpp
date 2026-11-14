@@ -17,7 +17,9 @@ void showRecordingMessage(const juce::String& msg)
 }
 } // namespace
 
-MainComponent::MainComponent(AppController& a) : app(a), transport(a, tlState), timeline(a, tlState)
+MainComponent::MainComponent(AppController& a)
+    : app(a), transport(a, tlState), timeline(a, tlState),
+      updater(*this, [this](std::function<void()> proceed) { confirmDiscard(std::move(proceed)); })
 {
     addAndMakeVisible(transport);
     addAndMakeVisible(timeline);
@@ -78,6 +80,7 @@ void MainComponent::closeDialogs()
         app.abandonLoad(); // nothing is added; the current project stays; a take keeps its file
     }
     alignWindow.reset(); // stops the align worker thread
+    updater.close();     // stops an update check or download
     transport.closeDialogs();
 }
 
@@ -802,7 +805,7 @@ void MainComponent::redo()
         app.history().redo();
 }
 
-juce::StringArray MainComponent::getMenuBarNames() { return { "File", "Edit" }; }
+juce::StringArray MainComponent::getMenuBarNames() { return { "File", "Edit", "Help" }; }
 
 juce::PopupMenu MainComponent::fileMenu()
 {
@@ -859,6 +862,28 @@ juce::PopupMenu MainComponent::editMenu()
     al.isEnabled = canAlign() && ! busy();
     al.shortcutKeyDescription = juce::String(mod) + "L";
     m.addItem(al);
+    m.addSeparator();
+    const bool selection = ! tlState.selectedClipIds.empty() && ! busy();
+    juce::PopupMenu::Item sp("Split at Playhead");
+    sp.itemID = menuSplit;
+    sp.isEnabled = selection;
+    sp.shortcutKeyDescription = "S";
+    m.addItem(sp);
+    juce::PopupMenu::Item del("Delete");
+    del.itemID = menuDelete;
+    del.isEnabled = selection;
+    del.shortcutKeyDescription = "Del";
+    m.addItem(del);
+    return m;
+}
+
+juce::PopupMenu MainComponent::helpMenu()
+{
+    juce::PopupMenu m;
+    juce::PopupMenu::Item up("Check for Updates...");
+    up.itemID = menuCheckUpdates;
+    up.isEnabled = ! busy() && ! updater.isBusy();
+    m.addItem(up);
     return m;
 }
 
@@ -868,6 +893,8 @@ juce::PopupMenu MainComponent::getMenuForIndex(int, const juce::String& name)
         return fileMenu();
     if (name == "Edit")
         return editMenu();
+    if (name == "Help")
+        return helpMenu();
     return {};
 }
 
@@ -881,6 +908,21 @@ void MainComponent::menuItemSelected(int id, int)
     {
         if (! busy())
             openAlignDialog();
+    }
+    else if (id == menuSplit || id == menuDelete)
+    {
+        if (! busy())
+        {
+            if (id == menuSplit)
+                timeline.splitSelected();
+            else
+                timeline.deleteSelected();
+        }
+    }
+    else if (id == menuCheckUpdates)
+    {
+        if (! busy())
+            updater.check();
     }
     else
         runFileCommand(id);

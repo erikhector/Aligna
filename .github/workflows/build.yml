@@ -83,6 +83,57 @@ jobs:
             build/Aligna_artefacts/Release/Aligna.exe, LICENSE, THIRD-PARTY-NOTICES.txt, `
             build/LICENSE-LAME.txt, build/LICENSE-RubberBand.txt
 
+      # The installer: per-user, no administrator prompt, registers .aligna (installer/windows/Aligna.iss).
+      - name: Build installer (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
+          if (-not (Test-Path $iscc)) { throw "Inno Setup (ISCC.exe) not found" }
+          $m = Select-String -Path build/CMakeCache.txt -Pattern '^CMAKE_PROJECT_VERSION:STATIC=(.+)$'
+          if (-not $m) { throw "Project version not found in build/CMakeCache.txt" }
+          $version = $m.Matches[0].Groups[1].Value
+          & $iscc "/DAppVersion=$version" "/DSourceExe=$PWD\build\Aligna_artefacts\Release\Aligna.exe" `
+            "/DBuildDir=$PWD\build" "/DRepoDir=$PWD" "/O$PWD" installer\windows\Aligna.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed with exit code $LASTEXITCODE" }
+          if (-not (Test-Path Aligna-windows-setup.exe)) { throw "The installer was not produced" }
+
+      # Install silently, check what the installer promises, uninstall, check that it is gone.
+      - name: Test installer (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath .\Aligna-windows-setup.exe -Wait -PassThru `
+            -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=$PWD\install.log"
+          if ($p.ExitCode -ne 0) { Get-Content install.log; throw "Install failed with exit code $($p.ExitCode)" }
+          $app = "$env:LOCALAPPDATA\Programs\Aligna"
+          foreach ($f in 'Aligna.exe', 'LICENSE.txt', 'THIRD-PARTY-NOTICES.txt', 'LICENSE-LAME.txt', 'LICENSE-RubberBand.txt', 'unins000.exe') {
+            if (-not (Test-Path "$app\$f")) { Get-Content install.log; throw "Not installed: $app\$f" }
+          }
+          $shortcut = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Aligna.lnk"
+          if (-not (Test-Path $shortcut)) { throw "No Start menu shortcut: $shortcut" }
+          $ext = (Get-Item 'HKCU:\Software\Classes\.aligna').GetValue('')
+          if ($ext -ne 'Aligna.Project') { throw ".aligna is registered as '$ext'" }
+          $cmd = (Get-Item 'HKCU:\Software\Classes\Aligna.Project\shell\open\command').GetValue('')
+          $expected = "`"$app\Aligna.exe`" `"%1`""
+          if ($cmd -ne $expected) { throw "Open command is '$cmd', expected '$expected'" }
+          if (Get-Process Aligna -ErrorAction SilentlyContinue) { throw "A silent install must not start Aligna" }
+
+          Start-Process -FilePath "$app\unins000.exe" -Wait -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART'
+          for ($i = 0; $i -lt 60 -and (Test-Path "$app\Aligna.exe"); $i++) { Start-Sleep -Milliseconds 500 }
+          if (Test-Path "$app\Aligna.exe") { throw "Uninstall left $app\Aligna.exe" }
+          if (Test-Path 'HKCU:\Software\Classes\Aligna.Project') { throw "Uninstall left the .aligna registration" }
+          if (Test-Path $shortcut) { throw "Uninstall left the Start menu shortcut" }
+
+      - name: Upload installer (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: Aligna-windows-setup
+          path: Aligna-windows-setup.exe
+          if-no-files-found: error
+
       - name: Upload archive
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:

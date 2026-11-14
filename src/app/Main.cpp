@@ -1,6 +1,7 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 
 #include "app/AppController.h"
+#include "io/FileNaming.h"
 #include "ui/MainComponent.h"
 
 namespace aligna
@@ -12,7 +13,15 @@ public:
     const juce::String getApplicationVersion() override { return JUCE_APPLICATION_VERSION_STRING; }
     bool moreThanOneInstanceAllowed() override { return true; }
 
-    void initialise(const juce::String&) override { controller = std::make_unique<AppController>(); mainWindow = std::make_unique<MainWindow>(getApplicationName(), *controller); }
+    void initialise(const juce::String&) override
+    {
+        controller = std::make_unique<AppController>();
+        mainWindow = std::make_unique<MainWindow>(getApplicationName(), *controller);
+        // A project named on the command line (double-click on a .aligna file) opens once the window is up.
+        const auto project = projectFileFromArgs(getCommandLineParameterArray(), juce::File::getCurrentWorkingDirectory());
+        if (project != juce::File())
+            mainWindow->openWhenReady(project);
+    }
     void shutdown() override
     {
         if (mainWindow != nullptr)
@@ -44,6 +53,13 @@ private:
         }
 
         void requestQuit() { main->requestQuit(); }
+        void openWhenReady(const juce::File& f)
+        {
+            juce::MessageManager::callAsync([safe = juce::Component::SafePointer<MainComponent>(main), f] {
+                if (safe != nullptr)
+                    safe->openFile(f);
+            });
+        }
         void closeDialogs() { main->closeDialogs(); }
         void closeButtonPressed() override { juce::JUCEApplication::getInstance()->systemRequestedQuit(); }
 

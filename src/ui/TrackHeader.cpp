@@ -1,4 +1,5 @@
 #include "ui/TrackHeader.h"
+#include "edit/ClipOps.h"
 #include <cmath>
 
 namespace aligna
@@ -66,8 +67,36 @@ TrackHeader::TrackHeader(AppController& a, juce::String id) : app(a), trackId(st
         edit("Solo", [on](Track& t) { if (t.solo == on) return false; t.solo = on; return true; });
     };
 
-    for (auto* c : std::initializer_list<juce::Component*> { &nameLabel, &volume, &pan, &muteButton, &soloButton })
+    deleteButton.setButtonText(juce::String::fromUTF8("\xc3\x97")); // multiplication sign
+    deleteButton.setTooltip("Delete track");
+    deleteButton.onClick = [this] { requestDelete(); };
+    nameLabel.addMouseListener(this, false); // a right-click on the name opens the track menu too
+
+    for (auto* c : std::initializer_list<juce::Component*> { &nameLabel, &volume, &pan, &muteButton, &soloButton, &deleteButton })
         addAndMakeVisible(*c);
+}
+
+void TrackHeader::mouseDown(const juce::MouseEvent& e)
+{
+    if (! e.mods.isPopupMenu() || ! isEnabled())
+        return;
+    juce::PopupMenu m;
+    m.addItem(1, "Delete track");
+    m.showMenuAsync(juce::PopupMenu::Options(), [safe = juce::Component::SafePointer<TrackHeader>(this)](int r) {
+        if (r == 1 && safe != nullptr)
+            safe->requestDelete();
+    });
+}
+
+void TrackHeader::requestDelete()
+{
+    // Deferred: the edit rebuilds the header column, which deletes this header, and that must not happen
+    // inside one of its own callbacks.
+    juce::MessageManager::callAsync([weak = juce::WeakReference<AppController>(&app), id = trackId] {
+        if (weak == nullptr || weak->isRecording() || weak->isLoading())
+            return;
+        weak->history().perform("Delete Track", [&](Project& p) { return removeTrackById(p, id); });
+    });
 }
 
 template <typename F>
@@ -122,5 +151,6 @@ void TrackHeader::resized()
     muteButton.setBounds(buttons.removeFromLeft(34));
     buttons.removeFromLeft(6);
     soloButton.setBounds(buttons.removeFromLeft(34));
+    deleteButton.setBounds(buttons.removeFromRight(26));
 }
 } // namespace aligna

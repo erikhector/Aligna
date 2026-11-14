@@ -4,10 +4,29 @@ Aligna is an open-source digital audio workstation (JUCE / C++20) focused on one
 Import several recordings of the same performance, line them up on a timeline (by hand, with snapping and nudging,
 or automatically by cross-correlation), listen, and export the mix as WAV or MP3. Source audio files are never modified.
 
+## Install
+
+Download the latest release from the [releases page](https://github.com/erikhector/Aligna/releases).
+
+- **Windows:** run `Aligna-windows-setup.exe`. It installs Aligna for your user account (no administrator prompt), adds it to the Start menu, and lets you open a `.aligna` project by double-clicking it. Uninstall it from Windows Settings > Apps > Installed apps. `Aligna-windows.zip` is the same program without an installer: unzip it and run `Aligna.exe`.
+- **macOS:** unzip `Aligna-macos.zip` and move `Aligna.app` to Applications.
+- **Linux:** extract `Aligna-linux.tar.gz` and run `./Aligna`.
+
+Builds are not code-signed, so Windows and macOS warn the first time; see [Running unsigned builds](#running-unsigned-builds).
+
+### Updating
+
+Help > Check for Updates... asks GitHub for the latest release. Aligna only contacts the network when you choose this.
+
+- **Windows:** if a newer version is available, Install downloads its installer, checks the download, asks about unsaved changes, closes Aligna and opens it again once the update is installed. Aligna started from the zip is updated the same way, into the installed location; the unzipped copy stays where it is.
+- **macOS:** Aligna tells you that a newer version exists and opens its release page.
+- **Linux:** the menu item opens the releases page.
+
 ## Features
 
 - Import WAV, AIFF, FLAC and MP3 (menu, Ctrl/Cmd+I, or drag and drop); each file becomes a track. Sources are resampled to the project rate once at import and are never modified.
 - Timeline with waveforms, zoom, beat grid and snapping; move, trim, split, delete and nudge clips (the later clip covers the earlier one where they overlap).
+- Delete a track with the × button in its header (or right-click the header); undo brings it back.
 - Per-track volume, pan, mute and solo; transport with play/pause/stop, BPM, time signature and grid settings.
 - Auto-align: pick a reference clip and shift other clips to match it by cross-correlation (shifts only, never stretches; reports inverted polarity). You confirm before anything moves.
 - Record a take over the project: the project plays while your input is recorded to a new track, compensated for latency.
@@ -33,10 +52,10 @@ Use Cmd instead of Ctrl on macOS.
 | Ctrl+L | Align selected clips to the reference |
 | Space | Play / pause |
 | R | Record / stop recording |
-| S | Split selected clips at the playhead |
+| S | Split selected clips at the playhead (also in the Edit menu and the clip's right-click menu) |
 | G | Toggle snap |
 | Left / Right | Nudge selected clips by 1 ms (Shift: 10 ms, Alt: 1 sample, Ctrl/Cmd: one grid step) |
-| Delete / Backspace | Delete selected clips |
+| Delete / Backspace | Delete selected clips (also in the Edit menu and the clip's right-click menu) |
 | Esc | Cancel a drag in progress |
 | Ctrl + mouse wheel | Zoom the timeline |
 | Shift + mouse wheel | Scroll the timeline horizontally |
@@ -46,6 +65,8 @@ Use Cmd instead of Ctrl on macOS.
 - **Select clips:** click a clip; Shift-click adds or removes clips from the selection.
 - **Align reference:** right-click a clip and choose "Set as align reference". Then select the clips to move and use Edit > Align to Reference (Ctrl/Cmd+L).
 - **Time selection:** Shift-drag on the ruler. Auto-align then only looks at that region (at most its first 60 s); without a selection it uses up to the first 60 s of overlap.
+- **Delete part of a clip:** put the playhead where the part begins or ends (click the ruler), select the clip and press S to split it. Then click the part you do not want and press Delete, or right-click it and choose Delete. Right-clicking a clip that is not selected selects it first, so the menu acts on the clip you clicked.
+- **Delete a track:** click the × button in the track header, or right-click the header and choose "Delete track". The track and its clips are removed in one undo step; the audio files on disk are not touched.
 - **Clip gain:** double-click a clip.
 - **Bypass snap:** hold Alt while dragging (the Snap button or G toggles snapping on and off).
 - **Time signature:** the two boxes next to BPM in the transport bar set beats per bar (1 to 32) and the beat unit (1, 2, 4, 8 or 16); each change is one undo step.
@@ -101,12 +122,14 @@ ctest --test-dir build -C Release --output-on-failure
 
 The app is produced at `build/Aligna_artefacts/Release/` (`Aligna`, `Aligna.app` or `Aligna.exe`).
 
+The Windows installer is built from `installer/windows/Aligna.iss` with [Inno Setup 6](https://jrsoftware.org/isinfo.php); the CI workflow shows the exact command and tests the result (silent install, checks, silent uninstall).
+
 ## Running unsigned builds
 
 Release builds from CI are not code-signed.
 
 - **macOS:** on macOS 14 and earlier, right-click `Aligna.app` and choose Open. On macOS 15 and later that no longer bypasses Gatekeeper: try to open the app once, then go to System Settings > Privacy & Security, scroll to the Security section and click "Open Anyway" next to Aligna. Alternatively run `xattr -dr com.apple.quarantine Aligna.app` in a terminal.
-- **Windows:** in the SmartScreen dialog choose "More info", then "Run anyway".
+- **Windows:** in the SmartScreen dialog choose "More info", then "Run anyway". This applies to the installer as well as to the zip.
 - **Linux:** extract the tarball and run `./Aligna`.
 
 ## License
