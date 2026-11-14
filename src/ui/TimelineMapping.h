@@ -21,6 +21,11 @@ struct TimelineMapping
 // Rounds a pixel coordinate to int, clamped to [-16, width + 16] (in double, before converting) so far-off-screen
 // edges cannot overflow int. NaN maps to 0.
 int toPixelClamped(double x, int width);
+// The same clamp without rounding, for float drawing calls (fillRect / drawLine): JUCE's software renderer converts
+// coordinates to 24.8 fixed point, which overflows a few million pixels out. NaN maps to 0.
+float toCoordClamped(double x, int width);
+// The segment (xa, ya)-(xb, yb) cut to x in [-16, width + 16], keeping its slope. False if nothing of it is in range.
+bool clipLineToWidth(double xa, double ya, double xb, double yb, int width, juce::Line<float>& out);
 
 enum class HitZone { None, Body, TrimStart, TrimEnd, FadeIn, FadeOut };
 struct Hit

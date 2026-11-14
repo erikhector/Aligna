@@ -1,6 +1,7 @@
 #include "engine/Stretcher.h"
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <rubberband/RubberBandStretcher.h>
 #include <vector>
 
@@ -17,12 +18,17 @@ std::optional<juce::AudioBuffer<float>> stretchBuffer(const juce::AudioBuffer<fl
     using RB = RubberBand::RubberBandStretcher;
     const int channels = in.getNumChannels();
     const int inLen = in.getNumSamples();
-    const int outLen = (int) std::llround((double) inLen * ratio);
+    if (channels == 0 || inLen == 0)
+        return juce::AudioBuffer<float>(channels, 0);
+
+    // Compute in double (not int): a long source at a high ratio does not fit an int. Also rejects a NaN ratio.
+    const double exactLen = std::round((double) inLen * ratio);
+    if (! (exactLen >= 1.0 && exactLen <= (double) std::numeric_limits<int>::max()))
+        return std::nullopt;
+    const int outLen = (int) exactLen;
 
     juce::AudioBuffer<float> out(channels, outLen);
     out.clear();
-    if (channels == 0 || inLen == 0 || outLen == 0)
-        return out;
 
     const auto report = [&](float p) { return !progress || progress(juce::jlimit(0.0f, 1.0f, p)); };
 

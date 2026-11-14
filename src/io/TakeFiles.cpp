@@ -71,5 +71,15 @@ void applyRelocation(Project& p, const std::map<juce::String, juce::String>& m)
             s.path = it->second;
 }
 
-bool isDiskAlmostFull(juce::int64 freeBytes) { return freeBytes > 0 && freeBytes < kMinFreeRecordingBytes; }
+bool isDiskAlmostFull(juce::int64 freeBytes, juce::int64 totalBytes)
+{
+    if (freeBytes < 0 || (freeBytes == 0 && totalBytes <= 0))
+        return false; // unknown
+    return freeBytes < kMinFreeRecordingBytes;
+}
+
+bool isDiskAlmostFull(const juce::File& folder)
+{
+    return isDiskAlmostFull(folder.getBytesFreeOnVolume(), folder.getVolumeTotalSize());
+}
 } // namespace aligna

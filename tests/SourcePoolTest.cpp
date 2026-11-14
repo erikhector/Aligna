@@ -1,5 +1,6 @@
 #include "engine/SourcePool.h"
 #include <catch2/catch_test_macros.hpp>
+#include <limits>
 #include <cmath>
 
 using namespace aligna;
@@ -161,4 +162,124 @@ TEST_CASE("load updates length/channels and clears missing")
     REQUIRE(si.length == 480);
     REQUIRE(si.numChannels == 1);
     REQUIRE(pool.get("id1") != nullptr);
+}
+
+TEST_CASE("non-finite samples in a float file are zeroed at import, loud ones are kept")
+{
+    TempDir t;
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float inf = std::numeric_limits<float>::infinity();
+    for (int channels : { 1, 2, 3 })
+    {
+        CAPTURE(channels);
+        juce::AudioBuffer<float> b(channels, 1000);
+        for (int c = 0; c < channels; ++c)
+            for (int i = 0; i < 1000; ++i)
+                b.setSample(c, i, 0.25f);
+        b.setSample(0, 10, nan);
+        b.setSample(0, 11, inf);
+        b.setSample(channels - 1, 12, -inf);
+        b.setSample(0, 13, 2.5f); // over full scale but finite: must survive
+        auto f = writeWav(t.dir.getChildFile("nan" + juce::String(channels) + ".wav"), b, 48000);
+
+        for (double projectRate : { 48000.0, 44100.0 }) // direct and resampled
+        {
+            CAPTURE(projectRate);
+            SourcePool pool;
+            juce::String err;
+            auto info = pool.import(f, projectRate, err);
+            REQUIRE(info.has_value());
+            auto d = pool.get(info->id);
+            bool allFinite = true;
+            for (int c = 0; c < d->getNumChannels(); ++c)
+                for (int i = 0; i < d->getNumSamples(); ++i)
+                    allFinite = allFinite && std::isfinite(d->getSample(c, i));
+            CHECK(allFinite);
+            if (projectRate == 48000.0 && channels <= 2)
+            {
+                CHECK(d->getSample(0, 9) == 0.25f);
+                CHECK(d->getSample(0, 10) == 0.0f);
+                CHECK(d->getSample(0, 11) == 0.0f);
+                CHECK(d->getSample(channels - 1, 12) == 0.0f);
+                CHECK(d->getSample(0, 13) == 2.5f);
+            }
+        }
+    }
+}
+
+TEST_CASE("a WAV whose header claims more audio than the file holds loads only what is there")
+{
+    TempDir t;
+    juce::AudioBuffer<float> b(2, 48000);
+    for (int i = 0; i < 48000; ++i)
+    {
+        b.setSample(0, i, 0.1f);
+        b.setSample(1, i, -0.1f);
+    }
+    auto whole = writeWav(t.dir.getChildFile("whole.wav"), b, 48000);
+
+    juce::MemoryBlock bytes;
+    REQUIRE(whole.loadFileAsData(bytes));
+    auto cut = t.dir.getChildFile("cut.wav");
+    REQUIRE(cut.replaceWithData(bytes.getData(), bytes.getSize() / 2)); // header intact, half the payload gone
+
+    SourcePool pool;
+    juce::String err;
+    CHECK(pool.import(whole, 48000, err).has_value());
+    auto info = pool.import(cut, 48000, err);
+    REQUIRE(info.has_value());
+    CHECK(info->length > 0);
+    CHECK(info->length < b.getNumSamples() * 3 / 4); // about half, never the claimed length
+
+    SourceInfo si { "x", cut.getFullPathName(), 5, 1, false };
+    CHECK(pool.load(si, 48000));
+    CHECK_FALSE(si.missing);
+}
+
+TEST_CASE("a tiny WAV claiming more than INT_MAX samples loads only the bytes it has")
+{
+    TempDir t;
+    // 8-bit mono PCM, data chunk length 0xFFFFFFF0 (about 4.29e9 samples), 16 bytes of actual audio.
+    const unsigned char header[] = {
+        'R', 'I', 'F', 'F', 0xF8, 0xFF, 0xFF, 0xFF, 'W', 'A', 'V', 'E',
+        'f', 'm', 't', ' ', 16, 0, 0, 0, 1, 0, 1, 0,
+        0x80, 0xBB, 0, 0, 0x80, 0xBB, 0, 0, 1, 0, 8, 0,
+        'd', 'a', 't', 'a', 0xF0, 0xFF, 0xFF, 0xFF
+    };
+    juce::MemoryBlock bytes(header, sizeof(header));
+    const unsigned char audio[16] = {};
+    bytes.append(audio, sizeof(audio));
+    auto f = t.dir.getChildFile("huge.wav");
+    REQUIRE(f.replaceWithData(bytes.getData(), bytes.getSize()));
+
+    SourcePool pool;
+    juce::String err;
+    auto info = pool.import(f, 48000, err);
+    REQUIRE(info.has_value());
+    CHECK(info->length <= (SamplePos) bytes.getSize()); // 8-bit mono: at most one frame per byte of the file
+}
+
+TEST_CASE("compressed files are not subject to the payload-size check")
+{
+    TempDir t;
+    juce::AudioBuffer<float> b(2, 96000); // digital silence: FLAC shrinks it far below its PCM size
+    b.clear();
+    auto f = t.dir.getChildFile("silence.flac");
+    {
+        juce::FlacAudioFormat flac;
+        std::unique_ptr<juce::OutputStream> os(f.createOutputStream());
+        REQUIRE(os != nullptr);
+        std::unique_ptr<juce::AudioFormatWriter> w(flac.createWriterFor(os.get(), 48000, 2, 16, {}, 0));
+        REQUIRE(w != nullptr);
+        os.release();
+        REQUIRE(w->writeFromAudioSampleBuffer(b, 0, b.getNumSamples()));
+    }
+    REQUIRE(f.getSize() < 96000 * 2 * 2);
+
+    SourcePool pool;
+    juce::String err;
+    auto info = pool.import(f, 48000, err);
+    REQUIRE(info.has_value());
+    CHECK(info->length == 96000);
+    CHECK(info->numChannels == 2);
 }

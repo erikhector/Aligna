@@ -9,6 +9,7 @@ namespace
 {
 const char* const kCancelled = "Cancelled";
 const char* const kSilent = "Clip is silent in the compared region";
+const char* const kInvalid = "Clip contains invalid audio in the compared region";
 constexpr double kSilenceRms = 1e-5;
 constexpr float kNoSecondPeakConfidence = 1000.0f;
 
@@ -81,7 +82,13 @@ std::optional<OffsetResult> findOffset(const std::vector<float>& reference, cons
     if (!report(0.0f))
         return cancelled();
 
-    if (rms(reference) < kSilenceRms || rms(target) < kSilenceRms)
+    const double refRms = rms(reference), tgtRms = rms(target);
+    if (! std::isfinite(refRms) || ! std::isfinite(tgtRms)) // NaN/Inf samples: nothing below would be meaningful
+    {
+        error = kInvalid;
+        return std::nullopt;
+    }
+    if (! (refRms >= kSilenceRms) || ! (tgtRms >= kSilenceRms))
     {
         error = kSilent;
         return std::nullopt;
@@ -151,11 +158,20 @@ std::optional<OffsetResult> findOffset(const std::vector<float>& reference, cons
             coarse = l;
         }
 
+    // Every comparison with NaN is false, so a broken correlation leaves `peak` at its start value: no result,
+    // rather than the first lag of the range with a huge confidence.
+    if (! (peak > 0.0f) || ! std::isfinite(peak))
+    {
+        error = kInvalid;
+        return std::nullopt;
+    }
+
     const auto exclusion = (SamplePos) std::ceil(0.005 * sampleRate / d);
     float second = 0.0f;
     for (SamplePos l = coarseLo; l <= coarseHi; ++l)
         if (std::abs(l - coarse) > exclusion)
-            second = std::max(second, phatAt(l));
+            if (const float v = phatAt(l); v > second) // NaN-safe: a NaN never becomes the runner-up
+                second = v;
     const float confidence = second > 0.0f ? std::min(peak / second, kNoSecondPeakConfidence) : kNoSecondPeakConfidence;
 
     if (!report(0.65f))

@@ -41,6 +41,8 @@ juce::String describeRow(const AlignRow&, double rate);       // full one-line t
 bool selectionIsCapped(const juce::Range<SamplePos>& sel, double rate); // longer than 60 s
 
 // Moves each (clipId, newStart) clip on its own track. Clips that no longer exist are skipped.
-// Returns true if at least one clip actually moved.
+// A negative newStart (aligned position before the project start) trims the first -newStart samples off the clip
+// and puts it at 0, so its audio still lands where the alignment wants it; skipped if nothing would remain.
+// Returns true if at least one clip actually changed.
 bool applyAlignments(Project&, const std::vector<std::pair<juce::String, SamplePos>>&);
 } // namespace aligna

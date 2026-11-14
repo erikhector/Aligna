@@ -66,6 +66,8 @@ juce::String describeRow(const AlignRow& r, double rate)
     const auto off = offsetSamples(r);
     auto s = r.label + ": " + formatOffsetMs(off, rate) + " (" + formatOffsetSamples(off)
              + "), confidence " + formatConfidence(r.result->confidence);
+    if (r.result->newStart < 0)
+        s += ", start trimmed by " + formatOffsetMs(-r.result->newStart, rate).substring(1) + " to fit the project";
     if (r.result->polarityInverted)
         s += ", polarity inverted";
     if (r.result->confidence < kConfidentThreshold)
@@ -87,8 +89,24 @@ bool applyAlignments(Project& p, const std::vector<std::pair<juce::String, Sampl
         auto* c = findClip(p, id, &ti);
         if (c == nullptr)
             continue;
-        const auto before = c->start;
-        if (moveClip(p, id, start, ti) && findClip(p, id)->start != before)
+        const auto beforeStart = c->start;
+        const auto beforeOffset = c->sourceOffset;
+        bool ok = false;
+        if (start < 0)
+        {
+            // Aligned position before the project start: drop the overshoot from the clip's head instead of
+            // shifting its audio late. sourceOffset/length are timeline samples whether or not the clip is stretched.
+            const SamplePos cut = -start;
+            if (cut >= c->length)
+                continue;
+            ok = trimClipStart(p, id, c->start + cut) && moveClip(p, id, 0, ti);
+        }
+        else
+        {
+            ok = moveClip(p, id, start, ti);
+        }
+        c = findClip(p, id);
+        if (ok && c != nullptr && (c->start != beforeStart || c->sourceOffset != beforeOffset))
             any = true;
     }
     return any;

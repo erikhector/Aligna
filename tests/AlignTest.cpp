@@ -1,6 +1,7 @@
 #include "align/AlignClips.h"
 #include "align/Correlate.h"
 #include <catch2/catch_test_macros.hpp>
+#include <limits>
 
 using namespace aligna;
 
@@ -251,5 +252,61 @@ TEST_CASE("computeAlignment: a stretched clip with a missing source takes the mi
         CHECK(err == missingErr);
         CHECK(err.isNotEmpty());
         CHECK(! err.contains("stretching"));
+    }
+}
+
+TEST_CASE("findOffset gives no result for non-finite input")
+{
+    juce::Random r(42);
+    const auto ref = noise(kLen, r);
+    const auto tgt = delayed(ref, 1200);
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float inf = std::numeric_limits<float>::infinity();
+
+    for (float bad : { nan, inf, -inf })
+        for (int which = 0; which < 2; ++which)
+            for (bool all : { false, true })
+            {
+                CAPTURE(bad, which, all);
+                auto a = ref, b = tgt;
+                auto& v = which == 0 ? a : b;
+                if (all)
+                    std::fill(v.begin(), v.end(), bad);
+                else
+                    v[v.size() / 2] = bad;
+                juce::String err;
+                const auto res = findOffset(a, b, 48000, kRate, noProgress, err);
+                CHECK_FALSE(res.has_value());
+                CHECK(err == "Clip contains invalid audio in the compared region");
+            }
+}
+
+TEST_CASE("computeAlignment: a start before the project start is reported unclamped")
+{
+    // The reference shows the source from 1 s on at timeline 0, so the target's first sample (source 0) belongs
+    // at timeline -48000.
+    auto s = twoClipSnapshot(24000);
+    s.project.tracks[0].clips[0].sourceOffset = 48000;
+    s.project.tracks[1].clips[0].sourceOffset = 0;
+    juce::String err;
+    auto res = computeAlignment(s, "ref", "tgt", std::nullopt, 30.0, noProgress, err);
+    REQUIRE(res.has_value());
+    CHECK(res->newStart == -48000);
+    CHECK(res->confidence >= kConfidentThreshold);
+    CHECK(res->newStart + s.project.tracks[1].clips[0].length > 0); // part of the clip remains on the timeline
+}
+
+TEST_CASE("computeAlignment: a clip whose stretch failed says so instead of 'still stretching'")
+{
+    for (int which = 0; which < 2; ++which)
+    {
+        CAPTURE(which);
+        auto s = twoClipSnapshot(48000);
+        auto& c = s.project.tracks[(size_t) which].clips[0];
+        c.stretch = 1.5;
+        s.failedStretch.insert(bufferKey(c));
+        juce::String err;
+        CHECK_FALSE(computeAlignment(s, "ref", "tgt", std::nullopt, 30.0, noProgress, err).has_value());
+        CHECK(err == "Clip could not be stretched, so it has no audio to compare");
     }
 }

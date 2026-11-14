@@ -12,7 +12,7 @@ public:
     AppSettings();
 
     double latencyOffsetMs() const;
-    void setLatencyOffsetMs(double ms); // clamped to [-500, 500]
+    void setLatencyOffsetMs(double ms); // clamped to [-500, 500]; not finite gives 0
     bool prerollOn() const;             // default true
     void setPrerollOn(bool on);
     std::unique_ptr<juce::XmlElement> audioDeviceState() const; // nullptr if none saved
@@ -21,6 +21,7 @@ public:
 private:
     juce::PropertiesFile& file() const;
 
+    juce::InterProcessLock processLock { "AlignaSettings" }; // held while the file is read or written
     mutable juce::ApplicationProperties props;
 };
 } // namespace aligna

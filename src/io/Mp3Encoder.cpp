@@ -1,4 +1,5 @@
 #include "io/Mp3Encoder.h"
+#include <cmath>
 #include <lame.h>
 
 namespace aligna
@@ -9,6 +10,7 @@ struct Mp3Encoder::Impl
     std::unique_ptr<juce::FileOutputStream> out;
     juce::int64 tagOffset = 0; // where the Xing/LAME frame placeholder begins (after ID3v2)
     std::vector<unsigned char> scratch;
+    std::vector<float> pcm[2]; // sanitised copy of the block being encoded (reused between calls)
 };
 
 int Mp3Encoder::outputRateFor(double inRate)
@@ -100,8 +102,12 @@ bool Mp3Encoder::open(const juce::File& file, double inRate, int kbps, const juc
         close();
         return false;
     }
-    impl->out->setPosition(0);
-    impl->out->truncate();
+    if (! impl->out->setPosition(0) || impl->out->truncate().failed())
+    {
+        error = "Could not open " + file.getFullPathName() + " for writing.";
+        close();
+        return false;
+    }
 
     const size_t idSize = lame_get_id3v2_tag(g, nullptr, 0);
     if (idSize > 0)
@@ -135,8 +141,19 @@ bool Mp3Encoder::write(const juce::AudioBuffer<float>& stereo, int numSamples, j
     const double inRate = (double) lame_get_in_samplerate(impl->gfp);
     const double nOut = std::ceil((double) numSamples * outRate / inRate);
     impl->scratch.resize((size_t) (1.25 * nOut + 7200));
-    const int n = lame_encode_buffer_ieee_float(impl->gfp, stereo.getReadPointer(0), stereo.getReadPointer(1),
-                                                numSamples, impl->scratch.data(), (int) impl->scratch.size());
+
+    // LAME has no checks of its own: a NaN/Inf sample indexes its quantiser tables out of bounds. Encode a copy with
+    // non-finite samples silenced and the rest limited to full scale.
+    for (int ch = 0; ch < 2; ++ch)
+    {
+        auto& dst = impl->pcm[ch];
+        dst.resize((size_t) numSamples);
+        const float* src = stereo.getReadPointer(ch);
+        for (int i = 0; i < numSamples; ++i)
+            dst[(size_t) i] = std::isfinite(src[i]) ? juce::jlimit(-1.0f, 1.0f, src[i]) : 0.0f;
+    }
+    const int n = lame_encode_buffer_ieee_float(impl->gfp, impl->pcm[0].data(), impl->pcm[1].data(), numSamples,
+                                                impl->scratch.data(), (int) impl->scratch.size());
     if (n < 0)
     {
         error = "MP3 encoding failed (code " + juce::String(n) + ").";
@@ -160,6 +177,7 @@ bool Mp3Encoder::finish(juce::String& error)
         return false;
     }
     if (! writeBytes(tail, n, error)) return false;
+    const auto endPos = impl->out->getPosition(); // total file size; the header rewrite below does not extend it
 
     // Rewrite the Xing/LAME info frame at the start of the audio data.
     const size_t tagSize = lame_get_lametag_frame(impl->gfp, nullptr, 0);
@@ -178,7 +196,8 @@ bool Mp3Encoder::finish(juce::String& error)
         }
     }
     impl->out->flush();
-    const bool ok = impl->out->getStatus().wasOk();
+    // The stream's status alone can miss a short write: also require every byte to be on disk.
+    const bool ok = impl->out->getStatus().wasOk() && impl->out->getFile().getSize() == endPos;
     if (! ok) error = "Could not finish the MP3 file.";
     close();
     return ok;

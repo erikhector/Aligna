@@ -21,6 +21,7 @@ AppSettings::AppSettings()
     o.osxLibrarySubFolder = "Application Support";
     o.storageFormat = juce::PropertiesFile::storeAsXML;
     o.millisecondsBeforeSaving = 0; // save synchronously on every change
+    o.processLock = &processLock;   // two running instances never write the file at the same time
     props.setStorageParameters(o);
 }
 

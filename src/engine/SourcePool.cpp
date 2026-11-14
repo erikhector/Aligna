@@ -1,6 +1,8 @@
 #include "engine/SourcePool.h"
 #include <juce_dsp/juce_dsp.h>
+#include <algorithm>
 #include <cmath>
+#include <limits>
 #include <new>
 
 namespace aligna
@@ -33,6 +35,21 @@ std::vector<float> resampleChannel(const float* in, juce::int64 inLen, juce::int
         outPos += n;
     }
     return out;
+}
+
+// True for the readers whose payload is plain PCM/float frames (JUCE's WAV and AIFF readers accept nothing else;
+// Ogg-in-WAV is handed to the Ogg reader and reports that format's name).
+bool isUncompressedFormat(const juce::AudioFormatReader& r)
+{
+    return r.getFormatName() == "WAV file" || r.getFormatName() == "AIFF file";
+}
+
+// Replaces NaN/Inf with 0. Magnitude is left alone: float files may legitimately exceed 1.0.
+void zeroNonFinite(float* d, int n)
+{
+    for (int i = 0; i < n; ++i)
+        if (! std::isfinite(d[i]))
+            d[i] = 0.0f;
 }
 } // namespace
 
@@ -70,10 +87,33 @@ AudioData SourcePool::decodeImpl(const juce::File& file, double projectRate, juc
         return nullptr;
     }
 
+    // The WAV/AIFF readers trust the header's data length. Their payload is uncompressed, so it can never hold more
+    // frames than the file has bytes for: a header that claims more (a cut-off download, or a hostile file) is read
+    // up to what is really there, instead of allocating and zero-filling memory for the claimed length.
+    auto frames = (juce::int64) reader->lengthInSamples;
+    if (isUncompressedFormat(*reader))
+    {
+        const auto bytesPerFrame = (juce::int64) reader->numChannels * (juce::int64) (reader->bitsPerSample / 8);
+        if (bytesPerFrame > 0)
+            frames = std::min(frames, file.getSize() / bytesPerFrame);
+        if (frames <= 0)
+        {
+            error = "File contains no audio";
+            return nullptr;
+        }
+    }
+    // Bound the file's own length before any cast or allocation (e.g. hours of 352.8 kHz audio exceed int).
+    if (frames > (juce::int64) std::numeric_limits<int>::max())
+    {
+        error = "File is too long to load";
+        return nullptr;
+    }
+    const int fileLen = (int) frames;
+
     const double fileRate = reader->sampleRate;
     const bool resample = std::abs(fileRate - projectRate) > 1e-6;
-    const auto outLen = resample ? (juce::int64) std::llround((double) reader->lengthInSamples * projectRate / fileRate)
-                                 : (juce::int64) reader->lengthInSamples;
+    const auto outLen = resample ? (juce::int64) std::llround((double) fileLen * projectRate / fileRate)
+                                 : (juce::int64) fileLen;
     if ((double) outLen > maxSeconds * projectRate)
     {
         error = "File is too long (max 2 hours)";
@@ -86,29 +126,32 @@ AudioData SourcePool::decodeImpl(const juce::File& file, double projectRate, juc
     }
 
     const int srcCh = (int) reader->numChannels;
-    juce::AudioBuffer<float> raw(srcCh, (int) reader->lengthInSamples);
-    if (! reader->read(&raw, 0, (int) reader->lengthInSamples, 0, true, true))
+    juce::AudioBuffer<float> raw(srcCh, fileLen);
+    if (! reader->read(&raw, 0, fileLen, 0, true, true))
     {
         error = "Could not open file";
         return nullptr;
     }
+    // Float files can carry NaN/Inf, which nothing downstream (device, export, alignment, LAME) expects.
+    for (int c = 0; c < srcCh; ++c)
+        zeroNonFinite(raw.getWritePointer(c), fileLen);
 
     // Channel layout: mono stays mono, stereo stays stereo, more is mixed down (even -> L, odd -> R).
     const int outCh = srcCh == 1 ? 1 : 2;
-    juce::AudioBuffer<float> layout(outCh, raw.getNumSamples());
+    juce::AudioBuffer<float> layout;
     if (srcCh <= 2)
     {
-        for (int c = 0; c < outCh; ++c)
-            layout.copyFrom(c, 0, raw, c, 0, raw.getNumSamples());
+        layout = std::move(raw); // already the right layout: no second copy
     }
     else
     {
+        layout.setSize(outCh, fileLen);
         layout.clear();
         const int nL = (srcCh + 1) / 2, nR = srcCh / 2;
         for (int c = 0; c < srcCh; ++c)
-            layout.addFrom(c % 2, 0, raw, c, 0, raw.getNumSamples(), 1.0f / (float) (c % 2 == 0 ? nL : nR));
+            layout.addFrom(c % 2, 0, raw, c, 0, fileLen, 1.0f / (float) (c % 2 == 0 ? nL : nR));
+        raw.setSize(0, 0);
     }
-    raw.setSize(0, 0);
 
     if (! resample)
         return std::make_shared<const juce::AudioBuffer<float>>(std::move(layout));
@@ -161,4 +204,6 @@ AudioData SourcePool::get(const juce::String& id) const
 }
 
 void SourcePool::clear() { buffers.clear(); }
+
+void SourcePool::remove(const juce::String& id) { buffers.erase(id); }
 } // namespace aligna

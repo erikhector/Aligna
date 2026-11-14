@@ -20,6 +20,9 @@ public:
     bool load(SourceInfo& info, double projectRate); // sets info.missing on failure
     AudioData get(const juce::String& id) const;     // nullptr if not loaded
     void clear();
+    // Forgets one buffer (no-op for an unknown id). Snapshots and render jobs share ownership, so anything
+    // still using it keeps it alive.
+    void remove(const juce::String& id);
 
 private:
     AudioData decode(const juce::File& file, double projectRate, juce::String& error); // catches bad_alloc
