@@ -139,7 +139,8 @@ bool AppController::openProject(const juce::File& f, juce::String& error)
     if (hadAudio && !p->sources.empty())
         playback.purgeRetired(true);
     for (auto& s : p->sources)
-        sources.load(s, p->sampleRate); // sets missing on failure
+        if (!s.missing) // the loader already ruled it out (not a regular file, or a network path): never open it
+            sources.load(s, p->sampleRate); // sets missing on failure
     hist.reset(std::move(*p));
     file = f;
     syncProjectRate();
