@@ -207,7 +207,7 @@ TEST_CASE("non-finite samples in a float file are zeroed at import, loud ones ar
     }
 }
 
-TEST_CASE("a WAV whose header claims more audio than the file holds is rejected")
+TEST_CASE("a WAV whose header claims more audio than the file holds loads only what is there")
 {
     TempDir t;
     juce::AudioBuffer<float> b(2, 48000);
@@ -226,15 +226,17 @@ TEST_CASE("a WAV whose header claims more audio than the file holds is rejected"
     SourcePool pool;
     juce::String err;
     CHECK(pool.import(whole, 48000, err).has_value());
-    CHECK_FALSE(pool.import(cut, 48000, err).has_value());
-    CHECK(err.contains("damaged"));
+    auto info = pool.import(cut, 48000, err);
+    REQUIRE(info.has_value());
+    CHECK(info->length > 0);
+    CHECK(info->length < b.getNumSamples() * 3 / 4); // about half, never the claimed length
 
     SourceInfo si { "x", cut.getFullPathName(), 5, 1, false };
-    CHECK_FALSE(pool.load(si, 48000));
-    CHECK(si.missing);
+    CHECK(pool.load(si, 48000));
+    CHECK_FALSE(si.missing);
 }
 
-TEST_CASE("a tiny WAV claiming more than INT_MAX samples is rejected before allocating")
+TEST_CASE("a tiny WAV claiming more than INT_MAX samples loads only the bytes it has")
 {
     TempDir t;
     // 8-bit mono PCM, data chunk length 0xFFFFFFF0 (about 4.29e9 samples), 16 bytes of actual audio.
@@ -252,8 +254,9 @@ TEST_CASE("a tiny WAV claiming more than INT_MAX samples is rejected before allo
 
     SourcePool pool;
     juce::String err;
-    CHECK_FALSE(pool.import(f, 48000, err).has_value());
-    CHECK(err == "File is too long to load");
+    auto info = pool.import(f, 48000, err);
+    REQUIRE(info.has_value());
+    CHECK(info->length <= (SamplePos) bytes.getSize()); // 8-bit mono: at most one frame per byte of the file
 }
 
 TEST_CASE("compressed files are not subject to the payload-size check")

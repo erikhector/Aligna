@@ -57,7 +57,8 @@ private:
     void doOpen();
     void openFile(const juce::File&); // replaces the project (no unsaved-changes question); reports failures
     void doExport();
-    void startExport(const ExportSettings&, const juce::File&);
+    // allowSilentClips: the user accepted that clips whose stretch failed are exported silent.
+    void startExport(const ExportSettings&, const juce::File&, bool allowSilentClips = false);
     void projectChanged();
     void layoutHeaders();
     std::vector<juce::String> alignTargets() const; // selected clips other than the reference, project order

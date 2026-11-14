@@ -1,5 +1,6 @@
 #include "engine/SourcePool.h"
 #include <juce_dsp/juce_dsp.h>
+#include <algorithm>
 #include <cmath>
 #include <limits>
 #include <new>
@@ -86,25 +87,28 @@ AudioData SourcePool::decodeImpl(const juce::File& file, double projectRate, juc
         return nullptr;
     }
 
+    // The WAV/AIFF readers trust the header's data length. Their payload is uncompressed, so it can never hold more
+    // frames than the file has bytes for: a header that claims more (a cut-off download, or a hostile file) is read
+    // up to what is really there, instead of allocating and zero-filling memory for the claimed length.
+    auto frames = (juce::int64) reader->lengthInSamples;
+    if (isUncompressedFormat(*reader))
+    {
+        const auto bytesPerFrame = (juce::int64) reader->numChannels * (juce::int64) (reader->bitsPerSample / 8);
+        if (bytesPerFrame > 0)
+            frames = std::min(frames, file.getSize() / bytesPerFrame);
+        if (frames <= 0)
+        {
+            error = "File contains no audio";
+            return nullptr;
+        }
+    }
     // Bound the file's own length before any cast or allocation (e.g. hours of 352.8 kHz audio exceed int).
-    if (reader->lengthInSamples > (juce::int64) std::numeric_limits<int>::max())
+    if (frames > (juce::int64) std::numeric_limits<int>::max())
     {
         error = "File is too long to load";
         return nullptr;
     }
-    const int fileLen = (int) reader->lengthInSamples;
-
-    // The WAV/AIFF readers trust the header's data length. Their payload is uncompressed, so it can never be larger
-    // than the file itself: a header that claims more would only make us allocate and zero-fill memory.
-    if (isUncompressedFormat(*reader))
-    {
-        const auto bytesPerFrame = (juce::int64) reader->numChannels * (juce::int64) (reader->bitsPerSample / 8);
-        if ((juce::int64) fileLen * bytesPerFrame > file.getSize())
-        {
-            error = "File is damaged (its header claims more audio than the file contains)";
-            return nullptr;
-        }
-    }
+    const int fileLen = (int) frames;
 
     const double fileRate = reader->sampleRate;
     const bool resample = std::abs(fileRate - projectRate) > 1e-6;

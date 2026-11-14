@@ -556,7 +556,7 @@ private:
 };
 } // namespace
 
-void MainComponent::startExport(const ExportSettings& settings, const juce::File& f)
+void MainComponent::startExport(const ExportSettings& settings, const juce::File& f, bool allowSilentClips)
 {
     if (const int n = countStretching(app.history().current(), app.pool(), app.stretchCache()); n > 0)
     {
@@ -565,6 +565,28 @@ void MainComponent::startExport(const ExportSettings& settings, const juce::File
             juce::String(n) + (n == 1 ? " clip is" : " clips are") + " still stretching "
                 + juce::String::fromUTF8("\xe2\x80\x94") + " export again in a moment.");
         timeline.grabKeyboardFocus();
+        return;
+    }
+    // A clip whose stretch failed (out of memory) has no audio: say so rather than export it silent unasked.
+    if (const int n = countStretchFailed(app.history().current(), app.pool(), app.stretchCache()); n > 0 && ! allowSilentClips)
+    {
+        juce::Component::SafePointer<MainComponent> safe(this);
+        auto opts = juce::MessageBoxOptions()
+                        .withIconType(juce::MessageBoxIconType::WarningIcon)
+                        .withTitle("Export")
+                        .withMessage(juce::String(n) + (n == 1 ? " clip" : " clips")
+                                     + " could not be stretched (probably not enough memory) and will be silent in the export.")
+                        .withButton("Export Anyway")
+                        .withButton("Cancel")
+                        .withAssociatedComponent(this);
+        juce::AlertWindow::showAsync(opts, [safe, settings, f](int r) {
+            if (safe == nullptr)
+                return;
+            if (r == 1)
+                safe->startExport(settings, f, true);
+            else
+                safe->timeline.grabKeyboardFocus();
+        });
         return;
     }
     // Snapshot on the message thread; the worker only reads it.
