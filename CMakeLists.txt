@@ -60,6 +60,7 @@ target_sources(aligna_core PRIVATE
   src/edit/ClipOps.cpp
   src/edit/DragMath.cpp
   src/edit/StretchMath.cpp
+  src/edit/RecordTiming.cpp
   src/edit/EditHistory.cpp
   src/io/ProjectFile.cpp
   src/io/FileNaming.cpp
@@ -160,6 +161,7 @@ add_executable(aligna_tests
   tests/ClipOpsTest.cpp
   tests/EditHistoryTest.cpp
   tests/GridTest.cpp
+  tests/RecordTimingTest.cpp
   tests/ProjectFileTest.cpp
   tests/MixerTest.cpp
   tests/SourcePoolTest.cpp
