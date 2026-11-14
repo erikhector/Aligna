@@ -25,8 +25,26 @@ public:
     // and starts the engine, so input sample 0 of the take is captured in the callback that plays the start.
     void armRecording() { armed.store(true, std::memory_order_release); }
     bool isArmed() const { return armed.load(std::memory_order_acquire); }
-    // Message thread: cancels a pending arm. Returns true if one was pending.
-    bool disarm() { return armed.exchange(false, std::memory_order_acq_rel); }
+    // Message thread: cancels a pending arm. Returns true if one was pending. When a callback has already
+    // consumed the arm (false) but not yet started the engine, the engine's pending start is withdrawn, so that
+    // callback starts nothing: after disarm() returns, the arm either started the take or never will.
+    bool disarm()
+    {
+        const bool wasArmed = armed.exchange(false, std::memory_order_acq_rel);
+        engine.cancelPendingStart();
+        return wasArmed;
+    }
+
+    // Audio thread: the two steps the callback takes for an arm; separate so that tests can interleave
+    // message-thread commands between them. consumeArm: true if an arm was pending (it no longer is).
+    bool consumeArm() noexcept
+    {
+        // Acquire pairs with armRecording's release.
+        return armed.load(std::memory_order_relaxed) && armed.exchange(false, std::memory_order_acq_rel);
+    }
+    // After consumeArm() returned true. Starts the engine, unless a transport command (disarm, stop, pause, seek)
+    // was issued since prepareStart(); only then flushes the resampler and begins the recorder.
+    void startArmed() noexcept;
 
     // Set in audioDeviceAboutToStart.
     double getDeviceRate() const { return deviceRate.load(); }
