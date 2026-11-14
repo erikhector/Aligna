@@ -18,6 +18,9 @@ public:
     void refresh();
 
     std::function<void(bool recording)> onRecordingChanged; // fired by refresh() when recording starts or stops
+    // If set, stops the running recording in place of a direct AppController::stopRecording (whose decode of
+    // the take would block the window) and reports the outcome itself.
+    std::function<void()> onStopRecording;
 
     void closeDialogs(); // closes the Audio Settings dialog if open
 

@@ -6,6 +6,17 @@
 
 namespace aligna
 {
+namespace
+{
+const juce::String takeLoadTitle = "Adding take...";
+
+void showRecordingMessage(const juce::String& msg)
+{
+    if (msg.isNotEmpty())
+        juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon, "Recording", msg);
+}
+} // namespace
+
 MainComponent::MainComponent(AppController& a) : app(a), transport(a, tlState), timeline(a, tlState)
 {
     addAndMakeVisible(transport);
@@ -23,8 +34,14 @@ MainComponent::MainComponent(AppController& a) : app(a), transport(a, tlState), 
         menuItemsChanged();
         repaint();
     };
+    transport.onStopRecording = [this] { stopRecording(showRecordingMessage); };
     timeline.onViewChanged = [this] { layoutHeaders(); };
     app.onProjectChanged = [this] { projectChanged(); };
+    // A recording that stopped by itself: the take is decoded like one stopped by hand.
+    app.onTakePending = [this](std::shared_ptr<PendingLoad> load) {
+        transport.refresh();
+        startLoad(std::move(load), takeLoadTitle, [](const juce::String& msg, bool) { showRecordingMessage(msg); });
+    };
     projectChanged();
     setWantsKeyboardFocus(true);
 #if JUCE_MAC
@@ -47,12 +64,19 @@ MainComponent::~MainComponent()
     juce::MenuBarModel::setMacMainMenu(nullptr);
 #endif
     app.onProjectChanged = nullptr;
+    app.onTakePending = nullptr;
     transport.onRecordingChanged = nullptr;
+    transport.onStopRecording = nullptr;
 }
 
 void MainComponent::closeDialogs()
 {
     exportTask.reset(); // stops the export thread
+    if (loadTask != nullptr)
+    {
+        loadTask.reset(); // asks the decode to stop and joins its thread
+        app.abandonLoad(); // nothing is added; the current project stays; a take keeps its file
+    }
     alignWindow.reset(); // stops the align worker thread
     transport.closeDialogs();
 }
@@ -139,13 +163,112 @@ void MainComponent::chooseImport()
                          });
 }
 
+namespace
+{
+// Decodes a load's files; the window shows the file in work and the progress over the whole batch.
+class LoadTask : public juce::ThreadWithProgressWindow
+{
+public:
+    LoadTask(const juce::String& title, std::shared_ptr<PendingLoad> l, std::function<void(bool cancelled)> done,
+             juce::Component* around)
+        : ThreadWithProgressWindow(title, true, true, 10000, {}, around), load(std::move(l)), onDone(std::move(done))
+    {
+    }
+    void run() override
+    {
+        // The worker owns the batch until it returns; the message thread reads it only in finishLoad.
+        auto& items = load->batch.items;
+        const int n = (int) items.size();
+        int shown = -1;
+        completed = load->batch.run([&](int index, float fraction) {
+            if (index != shown)
+            {
+                shown = index;
+                auto text = items[(size_t) index].file.getFileName();
+                if (n > 1)
+                    text += " (" + juce::String(index + 1) + " of " + juce::String(n) + ")";
+                setStatusMessage(text);
+            }
+            setProgress(((double) index + (double) fraction) / (double) n); // files done + part of this one
+            return ! threadShouldExit();
+        });
+    }
+    void threadComplete(bool userPressedCancel) override { onDone(userPressedCancel || ! completed); }
+
+private:
+    std::shared_ptr<PendingLoad> load;
+    std::function<void(bool)> onDone;
+    bool completed = false;
+};
+} // namespace
+
+void MainComponent::startLoad(std::shared_ptr<PendingLoad> load, const juce::String& title,
+                              std::function<void(const juce::String&, bool)> done, std::function<void()> beforeCommit)
+{
+    if (load == nullptr)
+        return;
+    auto finish = [this, load, done = std::move(done), beforeCommit = std::move(beforeCommit)](bool cancelled) {
+        if (! cancelled && beforeCommit)
+            beforeCommit();
+        const auto message = app.finishLoad(load, cancelled);
+        transport.refresh();
+        menuItemsChanged();
+        if (done)
+            done(message, cancelled);
+        timeline.grabKeyboardFocus();
+    };
+    if (load->batch.items.empty()) // nothing to decode (a project without audio): no window
+    {
+        finish(false);
+        return;
+    }
+    jassert(loadTask == nullptr); // the controller allows one load at a time
+    juce::Component::SafePointer<MainComponent> safe(this);
+    loadTask = std::make_unique<LoadTask>(
+        title, std::move(load),
+        [safe, finish = std::move(finish)](bool cancelled) {
+            // Deferred: the task must not be deleted from inside its own callback.
+            juce::MessageManager::callAsync([safe, finish, cancelled] {
+                // No task: closeDialogs() got here first and has abandoned the load.
+                if (safe == nullptr || safe->loadTask == nullptr)
+                    return;
+                safe->loadTask.reset();
+                finish(cancelled);
+            });
+        },
+        this);
+    static_cast<LoadTask*>(loadTask.get())->launchThread();
+    menuItemsChanged();
+}
+
+void MainComponent::stopRecording(std::function<void(const juce::String&)> report)
+{
+    juce::String msg;
+    auto load = app.beginStopRecording(msg); // the recorder and the transport stop here, at once
+    transport.refresh();
+    if (load == nullptr)
+    {
+        report(msg);
+        return;
+    }
+    startLoad(std::move(load), takeLoadTitle, [report = std::move(report)](const juce::String& m, bool) { report(m); });
+}
+
 void MainComponent::importAndReport(const juce::Array<juce::File>& files)
 {
     juce::String errors;
-    app.importFiles(files, errors);
-    if (errors.isNotEmpty())
-        juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon, "Import problems", errors);
-    repaint();
+    auto load = app.beginImport(files, errors);
+    if (load == nullptr)
+    {
+        if (errors.isNotEmpty())
+            juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon, "Import problems", errors);
+        return;
+    }
+    startLoad(std::move(load), "Importing audio...", [this](const juce::String& errs, bool) {
+        if (errs.isNotEmpty())
+            juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon, "Import problems", errs);
+        repaint();
+    });
 }
 
 namespace
@@ -166,7 +289,7 @@ bool MainComponent::isInterestedInFileDrag(const juce::StringArray& files)
 
 void MainComponent::filesDropped(const juce::StringArray& files, int, int)
 {
-    if (app.isRecording())
+    if (busy())
         return;
     juce::Array<juce::File> audio;
     for (auto& f : files)
@@ -248,33 +371,40 @@ void MainComponent::closeAlignDialog()
 
 void MainComponent::requestQuit()
 {
-    if (promptActive)
+    // While something is loading its progress window is up: Cancel there first.
+    if (promptActive || app.isLoading())
         return;
-    // Stop here, not in the controller, so the user sees any message. The take is in the history before the save question.
-    juce::String msg = app.isRecording() ? app.stopRecording() : juce::String();
-    transport.refresh();
     auto go = [safe = juce::Component::SafePointer<MainComponent>(this)] {
         if (safe != nullptr)
             safe->confirmDiscard([] { juce::JUCEApplication::quit(); });
     };
-    if (msg.isEmpty())
+    if (! app.isRecording())
     {
+        transport.refresh();
         go();
         return;
     }
-    promptActive = true; // a second quit request must not stack another prompt while this one is up
-    juce::AlertWindow::showAsync(juce::MessageBoxOptions()
-                                     .withIconType(juce::MessageBoxIconType::WarningIcon)
-                                     .withTitle("Recording")
-                                     .withMessage(msg)
-                                     .withButton("OK")
-                                     .withAssociatedComponent(this),
-                                 [safe = juce::Component::SafePointer<MainComponent>(this), go](int) {
-                                     if (safe == nullptr)
-                                         return;
-                                     safe->promptActive = false;
-                                     go();
-                                 });
+    // Stop here, not in the controller, so the user sees any message. The take is in the history before the save question.
+    stopRecording([this, go](const juce::String& msg) {
+        if (msg.isEmpty())
+        {
+            go();
+            return;
+        }
+        promptActive = true; // a second quit request must not stack another prompt while this one is up
+        juce::AlertWindow::showAsync(juce::MessageBoxOptions()
+                                         .withIconType(juce::MessageBoxIconType::WarningIcon)
+                                         .withTitle("Recording")
+                                         .withMessage(msg)
+                                         .withButton("OK")
+                                         .withAssociatedComponent(this),
+                                     [safe = juce::Component::SafePointer<MainComponent>(this), go](int) {
+                                         if (safe == nullptr)
+                                             return;
+                                         safe->promptActive = false;
+                                         go();
+                                     });
+    });
 }
 
 void MainComponent::confirmDiscard(std::function<void()> proceed)
@@ -431,22 +561,56 @@ void MainComponent::openFile(const juce::File& f)
     if (refuseWhileRecording(app, "Could not open project", "Stop recording before opening a project."))
         return;
     juce::String err;
-    tlState.timeSelection.reset();
-    closeAlignDialog();
-    timeline.closeClipTempo();
-    if (! app.openProject(f, err))
-        juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon, "Could not open project", err);
-    else
+    auto load = app.beginOpen(f, err); // reads and validates the project file; the audio comes next
+    if (load == nullptr)
     {
-        std::vector<juce::String> missing;
-        for (auto& s : app.history().current().sources)
-            if (s.missing)
-                missing.push_back(s.path);
-        if (! missing.empty())
-            juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon, "Missing audio files",
-                                                   missingFilesMessage(missing));
+        juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon, "Could not open project", err);
+        return;
     }
-    updateTitle();
+    // Until the decoding is through, the current project stays as it is: a cancelled open changes nothing.
+    startLoad(
+        std::move(load), "Opening project...",
+        [this](const juce::String&, bool cancelled) {
+            if (! cancelled)
+                reportUnloadedSources();
+            updateTitle();
+        },
+        [this] {
+            tlState.timeSelection.reset();
+            closeAlignDialog();
+            timeline.closeClipTempo();
+        });
+}
+
+void MainComponent::reportUnloadedSources()
+{
+    std::vector<juce::String> paths, lines;
+    bool undecodable = false;
+    for (auto& s : app.history().current().sources)
+    {
+        if (! s.missing)
+            continue;
+        const auto reason = app.sourceProblem(s.id);
+        undecodable = undecodable || reason.isNotEmpty();
+        paths.push_back(s.path);
+        lines.push_back(s.path + juce::String::fromUTF8(" \xe2\x80\x94 ") + (reason.isNotEmpty() ? reason : juce::String("File not found")));
+    }
+    if (paths.empty())
+        return;
+    if (! undecodable)
+    {
+        juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon, "Missing audio files",
+                                               missingFilesMessage(paths));
+        return;
+    }
+    // Some files are there but could not be decoded: say why, per file.
+    constexpr size_t cap = 20; // as missingFilesMessage
+    juce::String m = "These audio files could not be loaded:";
+    for (size_t i = 0; i < lines.size() && i < cap; ++i)
+        m += "\n" + lines[i];
+    if (lines.size() > cap)
+        m += "\n" + juce::String::fromUTF8("\xe2\x80\xa6") + "and " + juce::String((int) (lines.size() - cap)) + " more";
+    juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon, "Missing audio files", m);
 }
 
 void MainComponent::doExport()
@@ -558,6 +722,8 @@ private:
 
 void MainComponent::startExport(const ExportSettings& settings, const juce::File& f, bool allowSilentClips)
 {
+    if (app.isLoading()) // its progress window is up; the project is about to change
+        return;
     if (const int n = countStretching(app.history().current(), app.pool(), app.stretchCache()); n > 0)
     {
         juce::AlertWindow::showMessageBoxAsync(
@@ -610,7 +776,7 @@ void MainComponent::startExport(const ExportSettings& settings, const juce::File
 
 void MainComponent::runFileCommand(int id)
 {
-    if (app.isRecording() && id != menuQuit)
+    if (app.isLoading() || (app.isRecording() && id != menuQuit))
         return;
     switch (id)
     {
@@ -627,12 +793,12 @@ void MainComponent::runFileCommand(int id)
 
 void MainComponent::undo()
 {
-    if (! app.isRecording())
+    if (! busy())
         app.history().undo();
 }
 void MainComponent::redo()
 {
-    if (! app.isRecording())
+    if (! busy())
         app.history().redo();
 }
 
@@ -649,7 +815,7 @@ juce::PopupMenu MainComponent::fileMenu()
     auto add = [&](int id, const juce::String& name, const juce::String& key) {
         juce::PopupMenu::Item it(name);
         it.itemID = id;
-        it.isEnabled = ! app.isRecording() || id == menuQuit;
+        it.isEnabled = ! app.isLoading() && (! app.isRecording() || id == menuQuit);
         if (key.isNotEmpty())
             it.shortcutKeyDescription = mod + key;
         m.addItem(it);
@@ -679,18 +845,18 @@ juce::PopupMenu MainComponent::editMenu()
     juce::PopupMenu m;
     juce::PopupMenu::Item u(h.canUndo() ? "Undo " + h.undoName() : juce::String("Undo"));
     u.itemID = menuUndo;
-    u.isEnabled = h.canUndo() && ! app.isRecording();
+    u.isEnabled = h.canUndo() && ! busy();
     u.shortcutKeyDescription = juce::String(mod) + "Z";
     m.addItem(u);
     juce::PopupMenu::Item r(h.canRedo() ? "Redo " + h.redoName() : juce::String("Redo"));
     r.itemID = menuRedo;
-    r.isEnabled = h.canRedo() && ! app.isRecording();
+    r.isEnabled = h.canRedo() && ! busy();
     r.shortcutKeyDescription = juce::String(mod) + "Shift+Z";
     m.addItem(r);
     m.addSeparator();
     juce::PopupMenu::Item al("Align to Reference");
     al.itemID = menuAlign;
-    al.isEnabled = canAlign() && ! app.isRecording();
+    al.isEnabled = canAlign() && ! busy();
     al.shortcutKeyDescription = juce::String(mod) + "L";
     m.addItem(al);
     return m;
@@ -713,7 +879,7 @@ void MainComponent::menuItemSelected(int id, int)
         redo();
     else if (id == menuAlign)
     {
-        if (! app.isRecording())
+        if (! busy())
             openAlignDialog();
     }
     else
@@ -724,6 +890,8 @@ void MainComponent::menuItemSelected(int id, int)
 
 bool MainComponent::keyPressed(const juce::KeyPress& k)
 {
+    if (app.isLoading())
+        return false; // nothing while audio is being loaded: the progress window has the keyboard
     if (k == juce::KeyPress::spaceKey)
     {
         transport.togglePlay();

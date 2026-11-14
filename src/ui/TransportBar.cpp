@@ -114,10 +114,15 @@ void TransportBar::toggleRecord()
 {
     if (app.isRecording())
     {
-        showRecordingMessage(app.stopRecording());
+        if (onStopRecording)
+            onStopRecording();
+        else
+            showRecordingMessage(app.stopRecording());
         refresh();
         return;
     }
+    if (app.isLoading()) // an import, an open or the previous take is still being decoded
+        return;
     juce::Component::SafePointer<TransportBar> safe(this);
     app.startRecording([safe](juce::String error) {
         if (safe == nullptr)
