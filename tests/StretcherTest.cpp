@@ -1,5 +1,6 @@
 #include "engine/Stretcher.h"
 #include <catch2/catch_test_macros.hpp>
+#include <limits>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -105,4 +106,27 @@ TEST_CASE("stretcher: benchmark 60s stereo", "[.benchmark]")
     const auto ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     REQUIRE(out.has_value());
     std::printf("stretch 60 s stereo at 1.05: %.0f ms\n", ms);
+}
+
+TEST_CASE("stretcher: an output length that does not fit an int fails cleanly", "[stretcher]")
+{
+    // A buffer that only claims to be huge (it refers to one sample): the length check must come before any use.
+    float sample = 0.0f;
+    float* channels[] = { &sample };
+    const int huge = std::numeric_limits<int>::max() / 2 + 1000;
+    const juce::AudioBuffer<float> in(channels, 1, huge);
+    CHECK_FALSE(stretchBuffer(in, kRate, 4.0).has_value());
+    CHECK_FALSE(stretchBuffer(in, kRate, 2.0).has_value()); // just over INT_MAX
+}
+
+TEST_CASE("stretcher: degenerate lengths and ratios", "[stretcher]")
+{
+    CHECK_FALSE(stretchBuffer(noise(1, 1), kRate, 0.25).has_value()); // would round to 0 samples
+    CHECK_FALSE(stretchBuffer(noise(1, 1000), kRate, std::numeric_limits<double>::quiet_NaN()).has_value());
+    CHECK_FALSE(stretchBuffer(noise(1, 1000), kRate, -1.0).has_value());
+
+    const auto empty = stretchBuffer(juce::AudioBuffer<float>(2, 0), kRate, 2.0); // nothing in, nothing out
+    REQUIRE(empty.has_value());
+    CHECK(empty->getNumChannels() == 2);
+    CHECK(empty->getNumSamples() == 0);
 }
