@@ -114,6 +114,58 @@ TEST_CASE("toPixelClamped clamps far-off-screen coordinates")
     REQUIRE(toPixelClamped(250.4, 1000) == 250);
 }
 
+TEST_CASE("toCoordClamped clamps without rounding")
+{
+    REQUIRE(toCoordClamped(1.0e15, 1000) == Catch::Approx(1016.0));
+    REQUIRE(toCoordClamped(-1.0e15, 1000) == Catch::Approx(-16.0));
+    REQUIRE(toCoordClamped(std::nan(""), 1000) == Catch::Approx(0.0));
+    REQUIRE(toCoordClamped(250.25, 1000) == Catch::Approx(250.25));
+
+    // A long selection at max zoom: both edges stay far below the renderer's fixed-point limit.
+    TimelineMapping m;
+    m.samplesPerPixel = TimelineMapping::minSamplesPerPixel;
+    m.viewStart = 48000 * 60;
+    const float a = toCoordClamped(m.toX(0), 1200), b = toCoordClamped(m.toX(48000 * 600), 1200);
+    REQUIRE(a == Catch::Approx(-16.0));
+    REQUIRE(b == Catch::Approx(1216.0));
+}
+
+TEST_CASE("clipLineToWidth cuts a line to the view and keeps its slope")
+{
+    juce::Line<float> l;
+
+    // Entirely in range: unchanged.
+    REQUIRE(clipLineToWidth(10.0, 100.0, 60.0, 0.0, 1000, l));
+    REQUIRE(l.getStartX() == Catch::Approx(10.0));
+    REQUIRE(l.getStartY() == Catch::Approx(100.0));
+    REQUIRE(l.getEndX() == Catch::Approx(60.0));
+    REQUIRE(l.getEndY() == Catch::Approx(0.0));
+
+    // A fade-in that started far to the left: cut at -16, at the height the full line has there.
+    REQUIRE(clipLineToWidth(-1.0e9, 100.0, 500.0, 0.0, 1000, l));
+    REQUIRE(l.getStartX() == Catch::Approx(-16.0));
+    REQUIRE(l.getStartY() == Catch::Approx(100.0 * 516.0 / (1.0e9 + 500.0)).margin(1.0e-3));
+    REQUIRE(l.getEndX() == Catch::Approx(500.0));
+    REQUIRE(l.getEndY() == Catch::Approx(0.0));
+
+    // Both ends far outside, crossing the view: a nearly flat piece in the middle of the slope.
+    REQUIRE(clipLineToWidth(-1.0e9, 0.0, 1.0e9, 100.0, 1000, l));
+    REQUIRE(l.getStartX() == Catch::Approx(-16.0));
+    REQUIRE(l.getEndX() == Catch::Approx(1016.0));
+    REQUIRE(l.getStartY() == Catch::Approx(50.0).margin(1.0e-3));
+    REQUIRE(l.getEndY() == Catch::Approx(50.0).margin(1.0e-3));
+
+    // Entirely off one side, or not a number: nothing to draw.
+    REQUIRE_FALSE(clipLineToWidth(-5000.0, 0.0, -100.0, 100.0, 1000, l));
+    REQUIRE_FALSE(clipLineToWidth(2000.0, 0.0, 1.0e12, 100.0, 1000, l));
+    REQUIRE_FALSE(clipLineToWidth(std::nan(""), 0.0, 10.0, 100.0, 1000, l));
+
+    // Vertical line in range.
+    REQUIRE(clipLineToWidth(40.0, 0.0, 40.0, 100.0, 1000, l));
+    REQUIRE(l.getStartX() == Catch::Approx(40.0));
+    REQUIRE(l.getEndY() == Catch::Approx(100.0));
+}
+
 TEST_CASE("a 3e9-sample clip at max zoom gives a sane on-screen rect")
 {
     TimelineMapping m;

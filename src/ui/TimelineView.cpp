@@ -161,7 +161,21 @@ void TimelineView::timerCallback()
     }
     const double x = map.toX(pos);
     if (app.isRecording())
-        repaint(); // the growing red take bar
+    {
+        // The growing red take bar: only the strip it grew by since the last tick. Scrolling, zooming and the
+        // start / end of the recording repaint everything anyway.
+        const double head = map.toX(std::max(app.recordingStart(), pos));
+        const double from = lastTakeX.value_or(map.toX(app.recordingStart()));
+        const int a = toPixelClamped(std::min(from, head), getWidth()) - 2, b = toPixelClamped(std::max(from, head), getWidth()) + 2;
+        const int top = rulerHeight + (int) app.history().current().tracks.size() * trackHeight - viewY;
+        repaint(a, top, b - a, trackHeight);
+        lastTakeX = head;
+    }
+    else if (lastTakeX)
+    {
+        lastTakeX.reset();
+        repaint(); // the take lane is gone
+    }
     if (std::abs(x - lastPlayheadX) > 1.0e-6)
     {
         repaintColumn(lastPlayheadX);
@@ -193,16 +207,16 @@ void TimelineView::paint(juce::Graphics& g)
         if (app.isRecording())
         {
             const int top = rulerHeight + (int) proj.tracks.size() * trackHeight - viewY;
-            const float x1 = (float) map.toX(app.recordingStart());
-            const float x2 = (float) map.toX(std::max(app.recordingStart(), app.engine().getPosition()));
+            const float x1 = toCoordClamped(map.toX(app.recordingStart()), getWidth());
+            const float x2 = toCoordClamped(map.toX(std::max(app.recordingStart(), app.engine().getPosition())), getWidth());
             g.setColour(juce::Colour(0xffe04040).withAlpha(0.6f));
             g.fillRect(x1, (float) top + 8.0f, std::max(0.0f, x2 - x1), (float) trackHeight - 16.0f);
         }
 
         if (state.timeSelection)
         {
-            const float x1 = (float) map.toX(state.timeSelection->getStart());
-            const float x2 = (float) map.toX(state.timeSelection->getEnd());
+            const float x1 = toCoordClamped(map.toX(state.timeSelection->getStart()), getWidth());
+            const float x2 = toCoordClamped(map.toX(state.timeSelection->getEnd()), getWidth());
             g.setColour(juce::Colours::white.withAlpha(0.12f));
             g.fillRect(x1, (float) rulerHeight, x2 - x1, (float) (getHeight() - rulerHeight));
             g.setColour(juce::Colours::white.withAlpha(0.45f));
@@ -265,7 +279,10 @@ void TimelineView::paintRuler(juce::Graphics& g, juce::Rectangle<int> clip)
     int barStride = 1;
     while (pxPerBeat * bpb * barStride < 48.0 && barStride < (1 << 20))
         barStride *= 2;
-    for (long long b = firstBeat; b <= lastBeat; ++b)
+    // Beat ticks only when they have room; otherwise step straight from drawn bar to drawn bar.
+    const bool drawBeats = pxPerBeat >= 8.0 && barStride == 1;
+    const long long beatStep = drawBeats ? 1 : (long long) bpb * barStride;
+    for (long long b = firstBeat - firstBeat % beatStep; b <= lastBeat; b += beatStep)
     {
         const bool isBar = b % bpb == 0;
         const double x = map.toX((SamplePos) std::llround((double) b * spb));
@@ -279,7 +296,7 @@ void TimelineView::paintRuler(juce::Graphics& g, juce::Rectangle<int> clip)
             g.drawText(juce::String(bar + 1), toPixelClamped(x, getWidth()) + 3, 0, 50, rulerHeight / 2,
                        juce::Justification::centredLeft, false);
         }
-        else if (pxPerBeat >= 8.0 && barStride == 1)
+        else if (drawBeats)
         {
             g.setColour(juce::Colours::white.withAlpha(0.35f));
             g.drawVerticalLine(toPixelClamped(x, getWidth()), (float) rulerHeight / 4.0f, (float) rulerHeight / 2.0f);
@@ -312,7 +329,8 @@ void TimelineView::paintRuler(juce::Graphics& g, juce::Rectangle<int> clip)
 
     if (state.timeSelection)
     {
-        const float a = (float) map.toX(state.timeSelection->getStart()), b = (float) map.toX(state.timeSelection->getEnd());
+        const float a = toCoordClamped(map.toX(state.timeSelection->getStart()), getWidth());
+        const float b = toCoordClamped(map.toX(state.timeSelection->getEnd()), getWidth());
         g.setColour(juce::Colour(0xff4aa3ff).withAlpha(0.35f));
         g.fillRect(a, 0.0f, b - a, (float) rulerHeight);
     }
@@ -340,7 +358,9 @@ void TimelineView::paintTrack(juce::Graphics& g, const Track& track, int index, 
     {
         const auto& c = *order[i];
         const int l = toPixelClamped(map.toX(c.start), getWidth()), r = toPixelClamped(map.toX(c.start + c.length), getWidth());
-        if (r < clip.getX() || l > clip.getRight())
+        if (l > clip.getRight())
+            break; // sorted by start: every later clip is further right still
+        if (r < clip.getX())
             continue;
         const juce::Rectangle<int> rect(l, top + 2, std::max(1, r - l), trackHeight - 4);
 
@@ -350,6 +370,8 @@ void TimelineView::paintTrack(juce::Graphics& g, const Track& track, int index, 
         {
             const auto& o = *order[j];
             const int ol = toPixelClamped(map.toX(o.start), getWidth()), orr = toPixelClamped(map.toX(o.start + o.length), getWidth());
+            if (ol >= rect.getRight())
+                break; // sorted by start: this clip and all later ones begin past the right edge
             covered.addWithoutMerging(rect.getIntersection({ ol, rect.getY(), std::max(0, orr - ol), rect.getHeight() }));
         }
         covered.consolidate();
@@ -402,12 +424,16 @@ void TimelineView::paintClip(juce::Graphics& g, const Clip& c, juce::Rectangle<i
     }
 
     // Fades.
+    // From the unclamped clip edges (r is clamped to the view), cut to the view so far-off-screen ends cannot overflow.
+    const double sx = map.toX(c.start), ex = map.toX(c.start + c.length);
     const double fx = map.toX(c.start + c.fadeIn), tx = map.toX(c.start + c.length - c.fadeOut);
+    const double yTop = (double) r.getY() + 1.0, yBottom = (double) r.getBottom();
     g.setColour(juce::Colours::white.withAlpha(0.7f * alpha));
-    if (c.fadeIn > 0)
-        g.drawLine((float) r.getX(), (float) r.getBottom(), (float) fx, (float) r.getY() + 1.0f, 1.0f);
-    if (c.fadeOut > 0)
-        g.drawLine((float) tx, (float) r.getY() + 1.0f, (float) r.getRight(), (float) r.getBottom(), 1.0f);
+    juce::Line<float> fade;
+    if (c.fadeIn > 0 && clipLineToWidth(sx, yBottom, fx, yTop, getWidth(), fade))
+        g.drawLine(fade, 1.0f);
+    if (c.fadeOut > 0 && clipLineToWidth(tx, yTop, ex, yBottom, getWidth(), fade))
+        g.drawLine(fade, 1.0f);
 
     // Border (selection / align reference).
     const bool selected = state.selectedClipIds.count(c.id) > 0;
@@ -637,18 +663,21 @@ void TimelineView::mouseDown(const juce::MouseEvent& e)
                 juce::PopupMenu m;
                 m.addItem(1, "Set as align reference", true, state.alignReferenceClipId == hit.clipId);
                 m.addItem(2, juce::String::fromUTF8("Clip tempo\xe2\x80\xa6"));
-                m.showMenuAsync(juce::PopupMenu::Options(), [this, id = hit.clipId](int r) {
+                juce::Component::SafePointer<TimelineView> safe(this);
+                m.showMenuAsync(juce::PopupMenu::Options(), [safe, id = hit.clipId](int r) {
+                    if (safe == nullptr)
+                        return;
                     if (r == 2)
                     {
-                        showClipTempo(id);
+                        safe->showClipTempo(id);
                         return;
                     }
                     if (r == 1)
                     {
-                        state.alignReferenceClipId = id;
-                        repaint();
+                        safe->state.alignReferenceClipId = id;
+                        safe->repaint();
                     }
-                    grabKeyboardFocus(); // shortcuts keep working after the popup closes
+                    safe->grabKeyboardFocus(); // shortcuts keep working after the popup closes
                 });
             }
         }
@@ -888,8 +917,12 @@ void TimelineView::showGainPopup(const juce::MouseEvent& e, const juce::String& 
     if (c == nullptr)
         return;
     auto id = clipId;
-    auto content = std::make_unique<GainPopup>(c->gainDb, [this, id](float db) {
-        app.history().perform("Clip Gain", [&](Project& p) {
+    // The call-out box can outlive this view.
+    juce::Component::SafePointer<TimelineView> safe(this);
+    auto content = std::make_unique<GainPopup>(c->gainDb, [safe, id](float db) {
+        if (safe == nullptr)
+            return;
+        safe->app.history().perform("Clip Gain", [&](Project& p) {
             auto* cl = findClip(p, id);
             if (cl == nullptr || std::abs(cl->gainDb - juce::jlimit(-60.0f, 12.0f, db)) < 1.0e-4f)
                 return false;
