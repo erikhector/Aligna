@@ -12,6 +12,12 @@ namespace
 {
 const juce::String noInputMessage = "No audio input available. Choose one in Audio Settings.";
 
+// Must match maxSeconds in engine/SourcePool.cpp: a longer take could not be imported when recording stops.
+constexpr double maxSourceSeconds = 2.0 * 60.0 * 60.0;
+// Recording stops by itself this long before the limit (resampling to the project rate may round up).
+constexpr double takeLimitMarginSeconds = 60.0;
+constexpr int timerMs = 250;
+
 // The saved setup enables an input channel (JUCE writes "audioDeviceInChans" only for explicit channels).
 bool savedHasInputs(const juce::XmlElement* xml)
 {
@@ -33,6 +39,7 @@ AppController::AppController()
 
 AppController::~AppController()
 {
+    masterReference.clear(); // pending permission callbacks see a null controller from here on
     stopTimer();
     onProjectChanged = nullptr; // the UI is gone; stopRecording below still changes the project
     onRecordingStopped = nullptr;
@@ -44,6 +51,7 @@ AppController::~AppController()
     chain.setRecorder(nullptr);
     hist.onChange = nullptr;
     stretched.onReady = nullptr;
+    stopTimer(); // stopRecording's snapshot change restarted it
 }
 
 void AppController::syncProjectRate() { chain.setProjectRate(hist.current().sampleRate, deviceManager); }
@@ -57,12 +65,33 @@ void AppController::projectChanged()
 void AppController::rebuildSnapshot()
 {
     playback.setSnapshot(makeSnapshot(hist.current(), sources, stretched));
+    if (!isTimerRunning())
+        startTimer(timerMs); // frees the snapshot just retired without waiting for another edit
     if (onProjectChanged)
         onProjectChanged();
 }
 
+void AppController::releaseProjectAudio()
+{
+    engine().pause();
+    engine().setPosition(0);
+    playback.setSnapshot(std::make_shared<const MixSnapshot>()); // the old snapshot owned every source buffer
+    if (!isTimerRunning())
+        startTimer(timerMs);
+    sources.clear();
+    stretched.clear(); // never reuse renders of an earlier project, whose sources may have been edited
+}
+
 void AppController::importFiles(const juce::Array<juce::File>& files, juce::String& errors)
 {
+    if (files.isEmpty())
+        return;
+    if (recording || hist.isLocked())
+    {
+        // The history refuses edits now, so the decoded audio would be left in the pool with no track.
+        errors += "Stop recording before importing files.\n";
+        return;
+    }
     const auto rate = hist.current().sampleRate;
     std::vector<SourceInfo> imported;
     for (auto& f : files)
@@ -87,14 +116,11 @@ void AppController::newProject(double sampleRate)
 {
     stopRecording(); // no-op unless recording; the take is kept in the outgoing project's folder
     sessionTakes = juce::File();
-    engine().pause();
-    engine().setPosition(0);
-    sources.clear();
+    releaseProjectAudio();
     file = juce::File();
     Project p;
     p.sampleRate = sampleRate;
     hist.reset(std::move(p));
-    stretched.clear();
     syncProjectRate();
     projectChanged();
 }
@@ -106,14 +132,16 @@ bool AppController::openProject(const juce::File& f, juce::String& error)
         return false;
     stopRecording(); // no-op unless recording
     sessionTakes = juce::File();
-    engine().pause();
-    engine().setPosition(0);
-    sources.clear();
+    const bool hadAudio = !hist.current().sources.empty();
+    releaseProjectAudio();
+    // Free the outgoing project's audio before decoding the new one, so the two are never in memory together.
+    // The retired snapshot must first reach its safety age: a wait of at most PlaybackEngine::retireMs.
+    if (hadAudio && !p->sources.empty())
+        playback.purgeRetired(true);
     for (auto& s : p->sources)
         sources.load(s, p->sampleRate); // sets missing on failure
     hist.reset(std::move(*p));
     file = f;
-    stretched.clear(); // never reuse renders of an earlier project, whose sources may have been edited
     syncProjectRate();
     projectChanged();
     return true;
@@ -237,6 +265,8 @@ void AppController::beginRecording(const std::function<void(juce::String)>& done
             sessionTakes = newSessionTakesFolder(defaultUnsavedTakesRoot(), juce::Time::getCurrentTime());
         folder = sessionTakes;
     }
+    if (isDiskAlmostFull(folder))
+        return fail("Cannot record: the disk is almost full.");
     const auto takeName = nextTakeName(project);
     const auto takeFile = uniqueTakeFile(folder, takeName);
 
@@ -255,7 +285,7 @@ void AppController::beginRecording(const std::function<void(juce::String)>& done
     hist.setLocked(true);
     engine().prepareStart(pre);
     chain.armRecording();
-    startTimer(250);
+    startTimer(timerMs);
     fail({});
 }
 
@@ -263,12 +293,11 @@ juce::String AppController::stopRecording()
 {
     if (!recording)
         return {};
-    stopTimer();
-    recording = false;
+    recording = false; // the timer stops by itself
     chain.disarm(); // a still-pending arm must not start the engine after this stop
     engine().stop(); // back to the pre-roll start
-    const auto failure = recorder.failureMessage();
     const auto res = recorder.close();
+    const auto failure = recorder.failureMessage(); // after close: writing out the last samples may fail too
     hist.setLocked(false);
 
     auto withFailure = [&failure](const juce::String& msg) {
@@ -279,19 +308,26 @@ juce::String AppController::stopRecording()
 
     const double projectRate = hist.current().sampleRate;
     if (res.numSamples <= 0)
+    {
+        res.file.deleteFile(); // nothing but a header
         return withFailure("The take was too short and was not kept.");
+    }
 
     juce::String err;
     const auto info = sources.import(res.file, projectRate, err);
-    if (!info)
-        return withFailure("The take could not be read: " + err);
+    if (!info) // the file is kept: it may hold audio that another program can recover
+        return withFailure("The take could not be read: " + err + "\nIts file was kept: " + res.file.getFullPathName());
 
     auto L = recordLatency;
     L.projectRate = projectRate;
     L.manualOffsetMs = appSettings.latencyOffsetMs();
     const auto placed = placeTake(recordPreroll, recordStart, totalLatency(L), info->length, projectRate);
     if (!placed)
+    {
+        sources.remove(info->id); // nothing references it: no snapshot or render job was built with it
+        res.file.deleteFile();
         return withFailure("The take was too short and was not kept.");
+    }
 
     const auto name = recordTakeName;
     hist.perform("Record", [&](Project& p) {
@@ -303,22 +339,28 @@ juce::String AppController::stopRecording()
 
 void AppController::timerCallback()
 {
+    const bool retiredLeft = playback.purgeRetired();
     if (!recording)
     {
-        stopTimer();
+        if (!retiredLeft)
+            stopTimer();
         return;
     }
+    // A failed disk write is reported by the recorder, like a device failure or an overflow.
     const bool failed = recorder.hasFailed();
-    const bool diskFull = !failed && isDiskAlmostFull(recordFile.getParentDirectory().getBytesFreeOnVolume());
-    if (!failed && !diskFull)
+    const bool diskFull = !failed && isDiskAlmostFull(recordFile.getParentDirectory());
+    const double seconds = recordLatency.deviceRate > 0.0
+                               ? (double) recorder.samplesCaptured() / recordLatency.deviceRate : 0.0;
+    const bool tooLong = !failed && !diskFull && seconds >= maxSourceSeconds - takeLimitMarginSeconds;
+    if (!failed && !diskFull && !tooLong)
         return;
 
     auto msg = stopRecording(); // the take is kept; starts with the recorder's failure message, if any
-    if (diskFull)
-    {
-        const juce::String full = "Recording stopped: the disk is almost full.";
-        msg = msg.isEmpty() ? full : full + "\n" + msg;
-    }
+    const juce::String reason = diskFull  ? "Recording stopped: the disk is almost full."
+                                : tooLong ? "Recording stopped: a take can be at most 2 hours long."
+                                          : "";
+    if (reason.isNotEmpty())
+        msg = msg.isEmpty() ? reason : reason + "\n" + msg;
     if (onRecordingStopped)
         onRecordingStopped(msg);
 }
