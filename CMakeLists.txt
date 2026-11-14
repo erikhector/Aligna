@@ -69,6 +69,7 @@ target_sources(aligna_core PRIVATE
   src/engine/Mixer.cpp
   src/engine/PlaybackChain.cpp
   src/engine/PlaybackEngine.cpp
+  src/engine/Recorder.cpp
   src/engine/SourcePool.cpp
   src/engine/Stretcher.cpp
   src/engine/StretchCache.cpp
@@ -168,6 +169,7 @@ add_executable(aligna_tests
   tests/SourcePoolTest.cpp
   tests/PlaybackEngineTest.cpp
   tests/PlaybackChainTest.cpp
+  tests/RecorderTest.cpp
   tests/TimelineMappingTest.cpp
   tests/DragMathTest.cpp
   tests/AlignTest.cpp
