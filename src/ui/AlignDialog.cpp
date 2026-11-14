@@ -1,65 +1,59 @@
 #include "ui/AlignDialog.h"
 #include "edit/ClipOps.h"
 #include "engine/Mixer.h"
+#include <atomic>
+#include <mutex>
+#include <new>
+#include <system_error>
+#include <thread>
 
 namespace aligna
 {
-// Processes the targets one after another against an immutable snapshot.
-class AlignDialog::Worker : public juce::Thread
+// Everything one alignment run shares between the dialog and its worker thread. Each holds it through a shared_ptr,
+// so the worker can outlive the dialog; every run gets its own RunState and never meets an older worker.
+struct AlignDialog::RunState
 {
-public:
-    Worker(AlignDialog& d, int tok, std::shared_ptr<const MixSnapshot> s, juce::String ref, std::vector<AlignRow> t,
-           std::optional<juce::Range<SamplePos>> sel, double maxShift)
-        : juce::Thread("Aligna auto-align"), owner(&d), token(tok), snap(std::move(s)), referenceId(std::move(ref)),
-          rows(std::move(t)), selection(sel), maxShiftSeconds(maxShift), progress(&d.progressValue)
-    {
-    }
+    std::atomic<bool> cancel { false };   // set by the dialog; the worker stops at its next check
+    std::atomic<float> progress { 0.0f }; // written by the worker
+    std::atomic<bool> finished { false }; // set by the worker once its last row is in `done`
+    std::mutex lock;
+    std::vector<AlignRow> done; // finished rows the dialog has not collected yet (guarded by lock)
 
-    void cancel()
-    {
-        cancelled = true;
-        signalThreadShouldExit();
-    }
-
-    void run() override
+    // Body of the worker thread: processes the targets one after another against an immutable snapshot.
+    // It owns all its arguments and touches nothing else (no dialog, no message queue, no application object), so it
+    // can be left running after the dialog has gone; once cancelled it returns within one stage of computeAlignment.
+    static void work(std::shared_ptr<RunState> state, std::shared_ptr<const MixSnapshot> snap, juce::String referenceId,
+                     std::vector<AlignRow> rows, std::optional<juce::Range<SamplePos>> selection,
+                     double maxShiftSeconds)
     {
         const auto count = rows.size();
-        for (size_t i = 0; i < count && ! cancelled; ++i)
+        for (size_t i = 0; i < count && ! state->cancel; ++i)
         {
             auto row = rows[i];
             juce::String error;
-            auto res = computeAlignment(
-                *snap, referenceId, row.clipId, selection, maxShiftSeconds,
-                [&](float p) {
-                    progress->store((float) ((double) i + juce::jlimit(0.0f, 1.0f, p)) / (float) count);
-                    return ! cancelled && ! threadShouldExit();
-                },
-                error);
-            if (cancelled)
+            try
+            {
+                row.result = computeAlignment(
+                    *snap, referenceId, row.clipId, selection, maxShiftSeconds,
+                    [&](float p) {
+                        state->progress.store((float) ((double) i + juce::jlimit(0.0f, 1.0f, p)) / (float) count);
+                        return ! state->cancel;
+                    },
+                    error);
+            }
+            catch (const std::bad_alloc&) // the widest search range needs several hundred MB at once
+            {
+                row.result.reset();
+                error = "Not enough memory for this search range";
+            }
+            if (state->cancel)
                 break;
-            row.result = res;
-            row.error = res ? juce::String() : (error.isNotEmpty() ? error : juce::String("Alignment failed"));
-            juce::MessageManager::callAsync([safe = owner, tok = token, row] {
-                if (safe != nullptr)
-                    safe->rowArrived(tok, row);
-            });
+            row.error = row.result ? juce::String() : (error.isNotEmpty() ? error : juce::String("Alignment failed"));
+            const std::lock_guard<std::mutex> guard(state->lock);
+            state->done.push_back(std::move(row));
         }
-        juce::MessageManager::callAsync([safe = owner, tok = token, c = cancelled.load()] {
-            if (safe != nullptr)
-                safe->workFinished(tok, c);
-        });
+        state->finished = true;
     }
-
-private:
-    juce::Component::SafePointer<AlignDialog> owner;
-    int token;
-    std::shared_ptr<const MixSnapshot> snap;
-    juce::String referenceId;
-    std::vector<AlignRow> rows;
-    std::optional<juce::Range<SamplePos>> selection;
-    double maxShiftSeconds;
-    std::atomic<float>* progress;
-    std::atomic<bool> cancelled { false };
 };
 
 // One result line: tick box + text.
@@ -127,13 +121,13 @@ AlignDialog::~AlignDialog() { stopWork(); }
 void AlignDialog::stopWork()
 {
     stopTimer();
-    if (worker != nullptr)
+    if (run != nullptr)
     {
-        worker->cancel();
-        worker->stopThread(5000);
-        worker.reset();
+        // Flag and let go, never wait: the worker holds its own reference, stops at its next check and frees
+        // everything itself. Whatever it still produces stays in a RunState nobody reads any more.
+        run->cancel = true;
+        run.reset();
     }
-    ++runToken; // late callbacks are ignored
 }
 
 void AlignDialog::paint(juce::Graphics& g) { g.fillAll(juce::Colour(0xff26282c)); }
@@ -230,29 +224,61 @@ void AlignDialog::startAlign()
     rows.clear();
     list.updateContent();
 
-    progressValue = 0.0f;
     progressShown = 0.0;
     phase = Phase::Running;
     statusLabel.setText("Aligning...", juce::dontSendNotification);
     updateButtons();
     auto snap = makeSnapshot(proj, app.pool(), app.stretchCache());
-    worker = std::make_unique<Worker>(*this, ++runToken, snap, referenceId, std::move(todo), selection,
-                                      rangeSlider.getValue());
-    worker->startThread();
+    run = std::make_shared<RunState>();
+    try
+    {
+        // Detached: nothing ever joins it. The thread owns the run state and the snapshot through its arguments.
+        std::thread(&RunState::work, run, std::move(snap), referenceId, std::move(todo), selection,
+                    rangeSlider.getValue())
+            .detach();
+    }
+    catch (const std::system_error&) // no thread could be started
+    {
+        run.reset();
+        phase = Phase::Done;
+        statusLabel.setText("Could not start the alignment.", juce::dontSendNotification);
+        updateButtons();
+        return;
+    }
     startTimerHz(30);
 }
 
-void AlignDialog::timerCallback() { progressShown = progressValue.load(); }
+void AlignDialog::timerCallback()
+{
+    if (run == nullptr)
+        return;
+    progressShown = run->progress.load();
+    const bool finished = run->finished; // read before collecting: once set, every row is already in `done`
+    collectRows();
+    if (finished)
+        workFinished(false);
+}
+
+void AlignDialog::collectRows()
+{
+    if (run == nullptr)
+        return;
+    std::vector<AlignRow> arrived;
+    {
+        const std::lock_guard<std::mutex> guard(run->lock);
+        arrived.swap(run->done);
+    }
+    for (auto& r : arrived)
+        rowArrived(std::move(r));
+}
 
 void AlignDialog::cancelPressed()
 {
     if (phase == Phase::Running)
     {
-        // Flag only; the worker finishes within one progress callback and reports back.
-        if (worker != nullptr)
-            worker->cancel();
-        statusLabel.setText("Cancelling...", juce::dontSendNotification);
-        cancelButton.setEnabled(false);
+        // No waiting for the worker: keep the rows that are complete, then flag it and let go.
+        collectRows();
+        workFinished(true);
     }
     else
     {
@@ -262,10 +288,8 @@ void AlignDialog::cancelPressed()
     }
 }
 
-void AlignDialog::rowArrived(int token, AlignRow r)
+void AlignDialog::rowArrived(AlignRow r)
 {
-    if (token != runToken)
-        return;
     ticked.push_back(shouldPreTick(r));
     rows.push_back(std::move(r));
     if (rowStale(rows.size() - 1)) // project changed while aligning
@@ -274,16 +298,9 @@ void AlignDialog::rowArrived(int token, AlignRow r)
     list.repaint();
 }
 
-void AlignDialog::workFinished(int token, bool cancelled)
+void AlignDialog::workFinished(bool cancelled)
 {
-    if (token != runToken)
-        return;
-    stopTimer();
-    if (worker != nullptr)
-    {
-        worker->stopThread(5000);
-        worker.reset();
-    }
+    stopWork();
     progressShown = cancelled ? progressShown : 1.0;
     phase = Phase::Done;
     cancelButton.setEnabled(true);
