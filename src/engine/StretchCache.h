@@ -18,15 +18,24 @@ namespace aligna
 class StretchCache
 {
 public:
-    explicit StretchCache(size_t softCapBytes = size_t(2) << 30);
+    // How a job renders its buffer: stretchBuffer unless replaced (tests inject failures). Runs on a pool thread; a
+    // nullopt result without cancellation, or a thrown std::exception, is a failed render.
+    using RenderFn = std::function<std::optional<juce::AudioBuffer<float>>(
+        const juce::AudioBuffer<float>& in, double sampleRate, double ratio, const std::function<bool(float)>& progress)>;
+
+    explicit StretchCache(size_t softCapBytes = size_t(2) << 30, RenderFn render = {});
     ~StretchCache(); // cancels every render and waits for running ones
 
     // Ensure every key the project needs is ready or queued; cancel queued/running jobs no longer needed.
     // Clips whose source is missing or not loaded are never queued. Ratio 1 is never rendered.
+    // A key whose render failed (e.g. out of memory) is remembered and not queued again for as long as it stays
+    // needed; it is forgotten, and so retried later, once no clip needs it or after clear().
     void require(const Project&, const SourcePool&);
     AudioData get(const juce::String& key) const; // nullptr if not ready
-    bool isPending(const juce::String& key) const;
-    std::function<void()> onReady; // called on the message thread after any render completes
+    bool isPending(const juce::String& key) const; // queued or running; never true for a failed key
+    bool hasFailed(const juce::String& key) const; // the render failed: the clip stays silent, nothing is pending
+    int numFailed() const { return (int) failed.size(); }
+    std::function<void()> onReady; // called on the message thread after any render completes or fails
     void waitForIdle();            // tests only: block until no jobs are queued/running, then deliver onReady
     size_t bytesUsed() const { return used; }
     // Cancel and forget every job and drop every entry (bytesUsed() == 0). Safe with jobs running: late deliveries
@@ -38,6 +47,7 @@ private:
     {
         AudioData input;
         double sampleRate = 0, ratio = 1;
+        std::shared_ptr<const RenderFn> render;
         std::atomic<bool> cancelled { false }, done { false };
         std::optional<juce::AudioBuffer<float>> result; // written by the worker before `done` is set
     };
@@ -53,8 +63,8 @@ private:
     };
     class Job;
 
-    void deliver();         // message thread: collect finished results and call onReady if any were stored
-    bool collectFinished(); // stores finished results; true if anything was stored
+    void deliver();         // message thread: collect finished jobs and call onReady if any were stored or failed
+    bool collectFinished(); // stores finished results, notes failures; true if anything was stored or failed
     void store(const juce::String& key, juce::AudioBuffer<float>&& buffer);
     void evict();
 
@@ -64,12 +74,17 @@ private:
     std::map<juce::String, Entry> entries;
     std::map<juce::String, std::shared_ptr<JobState>> jobs; // queued, running or finished-but-not-collected
     std::set<juce::String> needed;                          // keys the last required project uses
+    std::set<juce::String> failed;                          // needed keys whose render failed; never auto-retried
+    std::shared_ptr<const RenderFn> render;                 // shared read-only with the jobs
     std::shared_ptr<Token> alive; // replaced by clear() so deliveries from older jobs expire
     juce::ThreadPool pool;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(StretchCache)
 };
 
-// Clips that need a stretched buffer (source present and not missing, ratio != 1) which the cache doesn't have yet.
+// Clips that need a stretched buffer (source present and not missing, ratio != 1) which the cache doesn't have yet
+// and may still deliver. Clips whose render failed are not counted: they will never become ready on their own.
 int countStretching(const Project&, const SourcePool&, const StretchCache&);
+// Clips (same conditions) whose stretched buffer failed to render; they stay silent in playback and export.
+int countStretchFailed(const Project&, const SourcePool&, const StretchCache&);
 } // namespace aligna

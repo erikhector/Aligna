@@ -22,16 +22,17 @@ public:
         {
             try
             {
-                s.result = stretchBuffer(*s.input, s.sampleRate, s.ratio,
-                                         [this](float) { return ! state->cancelled.load() && ! shouldExit(); });
+                s.result = (*s.render)(*s.input, s.sampleRate, s.ratio,
+                                       [this](float) { return ! state->cancelled.load() && ! shouldExit(); });
             }
-            catch (const std::bad_alloc&)
+            catch (const std::exception&) // bad_alloc above all
             {
-                s.result.reset(); // treated like a failed render: the clip stays silent
+                s.result.reset(); // a failed render: the clip stays silent
             }
         }
         s.input.reset(); // the message thread never reads it after queuing
-        const bool deliver = s.result.has_value() && ! s.cancelled.load();
+        // A failure is delivered too, so the cache can record it instead of leaving the key pending for ever.
+        const bool deliver = ! s.cancelled.load();
         s.done.store(true, std::memory_order_release);
         if (deliver)
             juce::MessageManager::callAsync([t = token] {
@@ -46,8 +47,14 @@ private:
     std::weak_ptr<Token> token;
 };
 
-StretchCache::StretchCache(size_t softCapBytes)
+StretchCache::StretchCache(size_t softCapBytes, RenderFn renderFn)
     : cap(softCapBytes),
+      render(std::make_shared<const RenderFn>(
+          renderFn ? std::move(renderFn)
+                   : RenderFn([](const juce::AudioBuffer<float>& in, double sampleRate, double ratio,
+                                 const std::function<bool(float)>& progress) {
+                         return stretchBuffer(in, sampleRate, ratio, progress);
+                     }))),
       alive(std::make_shared<Token>(Token { this })),
       pool(juce::ThreadPoolOptions {}.withThreadName("Stretch").withNumberOfThreads(2))
 {
@@ -67,12 +74,16 @@ void StretchCache::clear()
         job->cancelled.store(true);
     jobs.clear();
     needed.clear();
+    failed.clear();
     entries.clear();
     used = 0;
     alive = std::make_shared<Token>(Token { this }); // older jobs hold a weak_ptr to the previous token
 }
 
-int countStretching(const Project& p, const SourcePool&, const StretchCache& cache)
+namespace
+{
+// Clips that need a stretched buffer the cache does not hold, split by whether its render failed.
+int countNotReady(const Project& p, const StretchCache& cache, bool wantFailed)
 {
     int n = 0;
     for (auto& t : p.tracks)
@@ -83,10 +94,22 @@ int countStretching(const Project& p, const SourcePool&, const StretchCache& cac
             auto* s = findSource(p, c.sourceId);
             if (s == nullptr || s->missing)
                 continue;
-            if (cache.get(bufferKey(c)) == nullptr)
+            const auto key = bufferKey(c);
+            if (cache.get(key) == nullptr && cache.hasFailed(key) == wantFailed)
                 ++n;
         }
     return n;
+}
+} // namespace
+
+int countStretching(const Project& p, const SourcePool&, const StretchCache& cache)
+{
+    return countNotReady(p, cache, false);
+}
+
+int countStretchFailed(const Project& p, const SourcePool&, const StretchCache& cache)
+{
+    return countNotReady(p, cache, true);
 }
 
 void StretchCache::require(const Project& p, const SourcePool& sources)
@@ -125,6 +148,8 @@ void StretchCache::require(const Project& p, const SourcePool& sources)
         it->second->cancelled.store(true);
         it = jobs.erase(it);
     }
+    // A failure is only remembered while its key is needed; needing it again later is a fresh attempt.
+    std::erase_if(failed, [this](const juce::String& key) { return needed.count(key) == 0; });
 
     for (auto& [key, w] : want)
     {
@@ -133,9 +158,10 @@ void StretchCache::require(const Project& p, const SourcePool& sources)
             e->second.lastUsed = ++clock;
             continue;
         }
-        if (jobs.count(key) != 0)
-            continue;
+        if (jobs.count(key) != 0 || failed.count(key) != 0)
+            continue; // already on its way, or failed: not retried automatically
         auto state = std::make_shared<JobState>();
+        state->render = render;
         state->input = w.input;
         state->sampleRate = p.sampleRate;
         state->ratio = w.ratio;
@@ -153,6 +179,8 @@ AudioData StretchCache::get(const juce::String& key) const
 
 bool StretchCache::isPending(const juce::String& key) const { return jobs.count(key) != 0; }
 
+bool StretchCache::hasFailed(const juce::String& key) const { return failed.count(key) != 0; }
+
 void StretchCache::waitForIdle()
 {
     while (pool.getNumJobs() > 0)
@@ -168,7 +196,7 @@ void StretchCache::deliver()
 
 bool StretchCache::collectFinished()
 {
-    bool stored = false;
+    bool stored = false, anyFailed = false;
     for (auto it = jobs.begin(); it != jobs.end();)
     {
         auto& state = *it->second;
@@ -182,11 +210,17 @@ bool StretchCache::collectFinished()
             store(it->first, std::move(*state.result));
             stored = true;
         }
+        else
+        {
+            // Cancelled jobs were already dropped from `jobs`, so a finished one without a result has failed.
+            failed.insert(it->first);
+            anyFailed = true;
+        }
         it = jobs.erase(it);
     }
     if (stored)
         evict();
-    return stored;
+    return stored || anyFailed;
 }
 
 void StretchCache::store(const juce::String& key, juce::AudioBuffer<float>&& buffer)
