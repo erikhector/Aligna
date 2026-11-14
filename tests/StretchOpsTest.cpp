@@ -1,5 +1,6 @@
 #include "edit/ClipOps.h"
 #include "edit/EditHistory.h"
+#include "engine/StretchCache.h"
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <cmath>
@@ -175,4 +176,45 @@ TEST_CASE("maxStretchFor caps at two hours", "[stretch][ClipOps]")
     CHECK(maxStretchFor(g.p, g.c()) == Approx(4.0));
     CHECK(setClipStretch(f.p, f.id, 4.0));
     CHECK(f.c().stretch == Approx(2.0));
+}
+
+TEST_CASE("clipSourceRange follows trims, splits and a new ratio", "[stretch][ClipOps]")
+{
+    // What the stretch cache renders is derived from this range, so it has to track every edit of a stretched clip.
+    const SamplePos srcLen = 10 * 48000;
+    Fx f(srcLen);
+    REQUIRE(setClipStretch(f.p, f.id, 2.0));
+    CHECK(clipSourceRange(f.c(), srcLen) == juce::Range<SamplePos>(0, srcLen)); // the whole source
+
+    // Timeline (stretched) samples map to source samples through the ratio: 2 s trimmed off is 1 s of source.
+    REQUIRE(trimClipStart(f.p, f.id, 1000 + 2 * 48000));
+    REQUIRE(trimClipEnd(f.p, f.id, 1000 + 12 * 48000));
+    CHECK(f.c().sourceOffset == 2 * 48000);
+    CHECK(clipSourceRange(f.c(), srcLen) == juce::Range<SamplePos>(1 * 48000, 6 * 48000));
+
+    // Moving the clip changes nothing.
+    REQUIRE(moveClip(f.p, f.id, 777777, 0));
+    CHECK(clipSourceRange(f.c(), srcLen) == juce::Range<SamplePos>(1 * 48000, 6 * 48000));
+
+    // The halves of a split adjoin in the source (an odd split point is shared: both round outwards).
+    for (SamplePos d : { SamplePos(96000), SamplePos(96001) })
+    {
+        CAPTURE(d);
+        auto p = f.p;
+        const auto before = clipSourceRange(*findClip(p, f.id), srcLen);
+        auto rightId = splitClip(p, f.id, findClip(p, f.id)->start + d);
+        REQUIRE(rightId.has_value());
+        const auto left = clipSourceRange(*findClip(p, f.id), srcLen);
+        const auto right = clipSourceRange(*findClip(p, *rightId), srcLen);
+        CHECK(left.getStart() == before.getStart());
+        CHECK(right.getEnd() == before.getEnd());
+        CHECK(left.getEnd() - right.getStart() == d % 2);
+        CHECK(left.getUnionWith(right) == before);
+    }
+
+    // A new ratio rescales offset and length: the same source audio, give or take the rounding.
+    REQUIRE(setClipStretch(f.p, f.id, 1.5));
+    const auto r = clipSourceRange(f.c(), srcLen);
+    CHECK(std::abs(r.getStart() - 1 * 48000) <= 1);
+    CHECK(std::abs(r.getEnd() - 6 * 48000) <= 1);
 }

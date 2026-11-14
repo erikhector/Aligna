@@ -10,22 +10,41 @@
 
 namespace aligna
 {
+// The buffer a clip plays, resolved: buffer index = clip.sourceOffset + (timeline pos - clip.start) - start.
+// Indices outside the buffer are silence.
+struct ClipBuffer
+{
+    const juce::AudioBuffer<float>* buffer = nullptr; // nullptr = silent
+    // Index, in the whole (stretched) source, of the buffer's first sample: 0 for a source, and for a stretched
+    // buffer the start of the part of the source that was rendered (StretchedAudio::start).
+    SamplePos start = 0;
+};
+
 // Immutable mixing state, built off the audio thread. Clips of every track are sorted by start.
 struct MixSnapshot
 {
     Project project;
     std::map<juce::String, AudioData> audio; // keyed by bufferKey(clip)
-    // Per track, per clip (same order as project.tracks[t].clips): the clip's buffer (nullptr = silent), resolved by
-    // makeSnapshot so the audio thread never builds a key string. If absent (hand-built snapshots), renderMix looks
-    // unstretched clips up in `audio` by source id; stretched clips are then silent.
-    std::vector<std::vector<const juce::AudioBuffer<float>*>> clipAudio;
-    // bufferKey of stretched clips whose render failed (they are silent and will not become ready). Not read by
-    // renderMix; lets off-thread users of a snapshot tell "failed" from "still stretching".
+    // ClipBuffer::start of the buffers in `audio` that do not start at 0 (stretched buffers of part of a source).
+    std::map<juce::String, SamplePos> audioStart;
+    // Per track, per clip (same order as project.tracks[t].clips): the clip's buffer, resolved by makeSnapshot so
+    // the audio thread never builds a key string or searches a map. If absent (hand-built snapshots), renderMix
+    // looks unstretched clips up in `audio` by source id; stretched clips are then silent.
+    std::vector<std::vector<ClipBuffer>> clipAudio;
+    // bufferKey of stretched clips whose render failed (they are silent, or lack the part that failed, and will not
+    // become ready). Not read by renderMix; lets off-thread users of a snapshot tell "failed" from "still
+    // stretching".
     std::set<juce::String> failedStretch;
+    // bufferKey of stretched clips whose buffer is in `audio` but does not hold everything they play yet: a larger
+    // render is on its way and the missing part is silent until then. Not read by renderMix.
+    std::set<juce::String> partialStretch;
 };
 
 // audio[bufferKey(clip)] = stretch 1 ? pool.get(sourceId) : cache.get(key); not-ready or missing buffers are left out.
 std::shared_ptr<const MixSnapshot> makeSnapshot(const Project&, const SourcePool&, const StretchCache&);
+
+// The clip's buffer, looked up by key in `audio` / `audioStart`. Not for the audio thread (renderMix uses clipAudio).
+ClipBuffer clipBufferFor(const MixSnapshot&, const Clip&);
 
 // Adds (does not clear) numSamples of stereo mix starting at timeline pos `start` into out[ch][offset...].
 // Real-time safe: no allocation, locks or I/O.

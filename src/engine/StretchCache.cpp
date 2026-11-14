@@ -1,6 +1,7 @@
 #include "engine/StretchCache.h"
 #include "engine/Stretcher.h"
 #include <juce_events/juce_events.h>
+#include <cmath>
 #include <new>
 
 namespace aligna
@@ -22,7 +23,7 @@ public:
         {
             try
             {
-                s.result = (*s.render)(*s.input, s.sampleRate, s.ratio,
+                s.result = (*s.render)(*s.input, s.source.getStart(), s.source.getEnd(), s.sampleRate, s.ratio,
                                        [this](float) { return ! state->cancelled.load() && ! shouldExit(); });
             }
             catch (const std::exception&) // bad_alloc above all
@@ -51,9 +52,9 @@ StretchCache::StretchCache(size_t softCapBytes, RenderFn renderFn)
     : cap(softCapBytes),
       render(std::make_shared<const RenderFn>(
           renderFn ? std::move(renderFn)
-                   : RenderFn([](const juce::AudioBuffer<float>& in, double sampleRate, double ratio,
-                                 const std::function<bool(float)>& progress) {
-                         return stretchBuffer(in, sampleRate, ratio, progress);
+                   : RenderFn([](const juce::AudioBuffer<float>& in, SamplePos srcBegin, SamplePos srcEnd,
+                                 double sampleRate, double ratio, const std::function<bool(float)>& progress) {
+                         return stretchRange(in, srcBegin, srcEnd, sampleRate, ratio, progress);
                      }))),
       alive(std::make_shared<Token>(Token { this })),
       pool(juce::ThreadPoolOptions {}.withThreadName("Stretch").withNumberOfThreads(2))
@@ -80,9 +81,33 @@ void StretchCache::clear()
     alive = std::make_shared<Token>(Token { this }); // older jobs hold a weak_ptr to the previous token
 }
 
+juce::Range<SamplePos> clipSourceRange(const Clip& c, SamplePos sourceLength)
+{
+    if (! (c.stretch > 0.0))
+        return {};
+    const SamplePos len = std::max<SamplePos>(0, sourceLength);
+    const auto lo = (SamplePos) std::floor((double) c.sourceOffset / c.stretch);
+    const auto hi = (SamplePos) std::ceil((double) (c.sourceOffset + c.length) / c.stretch);
+    const SamplePos a = std::clamp<SamplePos>(lo, 0, len);
+    return { a, std::clamp<SamplePos>(hi, a, len) };
+}
+
+StretchSpan stretchSpanFor(juce::Range<SamplePos> needed, SamplePos sourceLength, double sampleRate)
+{
+    const SamplePos len = std::max<SamplePos>(0, sourceLength);
+    const auto pad = (SamplePos) std::llround(kStretchPadSeconds * sampleRate);
+    const auto block = std::max<SamplePos>(1, (SamplePos) std::llround(kStretchBlockSeconds * sampleRate));
+    const SamplePos a = std::clamp<SamplePos>(needed.getStart() - pad, 0, len);
+    const SamplePos b = std::clamp<SamplePos>(needed.getEnd() + pad, a, len);
+    StretchSpan s;
+    s.padded = { a, b };
+    s.render = { a / block * block, std::min(len, (b + block - 1) / block * block) };
+    return s;
+}
+
 namespace
 {
-// Clips that need a stretched buffer the cache does not hold, split by whether its render failed.
+// Clips that need a stretched buffer the cache does not hold in full, split by whether its render failed.
 int countNotReady(const Project& p, const StretchCache& cache, bool wantFailed)
 {
     int n = 0;
@@ -95,7 +120,7 @@ int countNotReady(const Project& p, const StretchCache& cache, bool wantFailed)
             if (s == nullptr || s->missing)
                 continue;
             const auto key = bufferKey(c);
-            if (cache.get(key) == nullptr && cache.hasFailed(key) == wantFailed)
+            if (! cache.covers(c) && cache.hasFailed(key) == wantFailed)
                 ++n;
         }
     return n;
@@ -120,6 +145,7 @@ void StretchCache::require(const Project& p, const SourcePool& sources)
     {
         AudioData input;
         double ratio;
+        juce::Range<SamplePos> hull; // source samples the key's clips play; empty until one plays any
     };
     std::map<juce::String, Want> want;
     for (auto& t : p.tracks)
@@ -130,8 +156,16 @@ void StretchCache::require(const Project& p, const SourcePool& sources)
             auto* s = findSource(p, c.sourceId);
             if (s == nullptr || s->missing)
                 continue;
-            if (auto in = sources.get(c.sourceId))
-                want.emplace(bufferKey(c), Want { std::move(in), c.stretch });
+            auto in = sources.get(c.sourceId);
+            if (in == nullptr)
+                continue;
+            const auto range = clipSourceRange(c, in->getNumSamples());
+            auto& w = want.try_emplace(bufferKey(c), Want { std::move(in), c.stretch, range }).first->second;
+            // The hull, not the pieces: one continuous render per key keeps clips of one key sample-continuous.
+            if (w.hull.isEmpty())
+                w.hull = range;
+            else if (! range.isEmpty())
+                w.hull = w.hull.getUnionWith(range);
         }
 
     needed.clear();
@@ -153,16 +187,43 @@ void StretchCache::require(const Project& p, const SourcePool& sources)
 
     for (auto& [key, w] : want)
     {
+        const SamplePos sourceLength = w.input->getNumSamples();
+        const auto span = stretchSpanFor(w.hull, sourceLength, p.sampleRate);
+        // A render serves if it holds the padded hull and is not wastefully large: more than twice a fresh render
+        // while the cache is over its cap. Short of that a larger one is kept, so shrinking never renders again.
+        const auto serves = [&](juce::Range<SamplePos> rendered, SamplePos renderedSourceLength) {
+            return renderedSourceLength == sourceLength && rendered.contains(span.padded)
+                   && ! (used > cap && rendered.getLength() > 2 * span.render.getLength());
+        };
+        const auto job = jobs.find(key);
         if (auto e = entries.find(key); e != entries.end())
         {
             e->second.lastUsed = ++clock;
-            continue;
+            if (serves(e->second.source, e->second.sourceLength))
+            {
+                if (job != jobs.end()) // a larger render that is not needed after all
+                {
+                    job->second->cancelled.store(true);
+                    jobs.erase(job);
+                }
+                continue;
+            }
+            // Otherwise the entry stays, and is served, until its replacement lands.
         }
-        if (jobs.count(key) != 0 || failed.count(key) != 0)
-            continue; // already on its way, or failed: not retried automatically
+        if (job != jobs.end())
+        {
+            if (serves(job->second->source, job->second->sourceLength))
+                continue; // already on its way
+            job->second->cancelled.store(true);
+            jobs.erase(job);
+        }
+        if (failed.count(key) != 0)
+            continue; // not retried automatically
         auto state = std::make_shared<JobState>();
         state->render = render;
         state->input = w.input;
+        state->source = span.render;
+        state->sourceLength = sourceLength;
         state->sampleRate = p.sampleRate;
         state->ratio = w.ratio;
         jobs[key] = state;
@@ -171,10 +232,25 @@ void StretchCache::require(const Project& p, const SourcePool& sources)
     evict();
 }
 
-AudioData StretchCache::get(const juce::String& key) const
+StretchedAudio StretchCache::find(const juce::String& key) const
 {
     auto it = entries.find(key);
-    return it == entries.end() ? nullptr : it->second.data;
+    return it == entries.end() ? StretchedAudio {} : StretchedAudio { it->second.data, it->second.start };
+}
+
+bool StretchCache::covers(const Clip& c) const
+{
+    auto it = entries.find(bufferKey(c));
+    if (it == entries.end())
+        return false;
+    const auto range = clipSourceRange(c, it->second.sourceLength);
+    return range.isEmpty() || it->second.source.contains(range); // empty: the clip lies beyond the source's end
+}
+
+juce::Range<SamplePos> StretchCache::sourceRange(const juce::String& key) const
+{
+    auto it = entries.find(key);
+    return it == entries.end() ? juce::Range<SamplePos>() : it->second.source;
 }
 
 bool StretchCache::isPending(const juce::String& key) const { return jobs.count(key) != 0; }
@@ -207,7 +283,7 @@ bool StretchCache::collectFinished()
         }
         if (state.result)
         {
-            store(it->first, std::move(*state.result));
+            store(it->first, state);
             stored = true;
         }
         else
@@ -223,12 +299,16 @@ bool StretchCache::collectFinished()
     return stored || anyFailed;
 }
 
-void StretchCache::store(const juce::String& key, juce::AudioBuffer<float>&& buffer)
+void StretchCache::store(const juce::String& key, JobState& job)
 {
+    auto& buffer = *job.result;
     const auto bytes = (size_t) buffer.getNumChannels() * (size_t) buffer.getNumSamples() * sizeof(float);
     auto& e = entries[key];
     used -= e.bytes;
     e.data = std::make_shared<const juce::AudioBuffer<float>>(std::move(buffer));
+    e.source = job.source;
+    e.sourceLength = job.sourceLength;
+    e.start = stretchedIndex(job.source.getStart(), job.ratio);
     e.bytes = bytes;
     e.lastUsed = ++clock;
     used += bytes;

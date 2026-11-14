@@ -26,19 +26,21 @@ std::optional<std::vector<float>> renderClipAlone(const MixSnapshot& s, const Cl
     if (progress && ! progress(0.0f))
         return std::nullopt;
     std::vector<float> out((size_t) std::max<SamplePos>(0, n), 0.0f);
-    const auto it = s.audio.find(bufferKey(clip));
-    if (it == s.audio.end() || it->second == nullptr)
+    const auto cb = clipBufferFor(s, clip);
+    if (cb.buffer == nullptr)
         return out;
-    const auto& buf = *it->second;
+    const auto& buf = *cb.buffer;
     const int channels = buf.getNumChannels();
     if (channels <= 0)
         return out;
 
-    // Timeline range covered by both the request and the clip, further limited by the buffer's extent.
+    // Timeline range covered by both the request and the clip, further limited by the buffer's extent (a stretched
+    // buffer may hold only part of the source: cb.start is the stretched-source index of its first sample).
+    const SamplePos origin = clip.start - clip.sourceOffset + cb.start; // timeline pos of buffer index 0
     SamplePos b = std::max(from, clip.start);
     SamplePos e = std::min(from + n, clip.start + clip.length);
-    b = std::max(b, clip.start - clip.sourceOffset);
-    e = std::min(e, clip.start - clip.sourceOffset + (SamplePos) buf.getNumSamples());
+    b = std::max(b, origin);
+    e = std::min(e, origin + (SamplePos) buf.getNumSamples());
     const float scale = 1.0f / (float) channels;
     for (SamplePos blockBegin = b, blockEnd = b; blockBegin < e; blockBegin = blockEnd)
     {
@@ -47,7 +49,7 @@ std::optional<std::vector<float>> renderClipAlone(const MixSnapshot& s, const Cl
         blockEnd = blockBegin + std::min(blockSize, e - blockBegin);
         for (SamplePos pos = blockBegin; pos < blockEnd; ++pos)
         {
-            const auto src = (int) (clip.sourceOffset + (pos - clip.start));
+            const auto src = (int) (pos - origin);
             float v = 0.0f;
             for (int ch = 0; ch < channels; ++ch)
                 v += buf.getSample(ch, src);
@@ -80,9 +82,13 @@ std::optional<ClipAlignment> computeAlignment(const MixSnapshot& s, const juce::
         // A missing or unknown source is never rendered: it takes the same silent path as an unstretched one.
         if (src == nullptr || src->missing)
             continue;
-        if (! nearlyEqual(c->stretch, 1.0) && s.audio.count(bufferKey(*c)) == 0)
+        // No buffer yet, or one that does not hold all of the clip yet (a larger render is on its way, or failed):
+        // comparing against the silent part would give a wrong answer with confidence.
+        const auto key = bufferKey(*c);
+        if (! nearlyEqual(c->stretch, 1.0)
+            && (s.audio.count(key) == 0 || s.partialStretch.count(key) != 0 || s.failedStretch.count(key) != 0))
         {
-            error = s.failedStretch.count(bufferKey(*c)) != 0
+            error = s.failedStretch.count(key) != 0
                         ? juce::String("Clip could not be stretched, so it has no audio to compare")
                         : juce::String::fromUTF8("Clip is still stretching \xe2\x80\x94 try again in a moment");
             return std::nullopt;

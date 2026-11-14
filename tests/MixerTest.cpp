@@ -1,5 +1,8 @@
 #include "engine/Mixer.h"
 #include "engine/StretchCache.h"
+#include "engine/Stretcher.h"
+#include "edit/ClipOps.h"
+#include <atomic>
 #include <catch2/catch_test_macros.hpp>
 #include <juce_events/juce_events.h>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
@@ -440,7 +443,7 @@ TEST_CASE("makeSnapshot: a stretched clip whose render failed is silent and list
 {
     StretchFixture f;
     StretchCache cache(size_t(2) << 30,
-                       [](const juce::AudioBuffer<float>&, double, double,
+                       [](const juce::AudioBuffer<float>&, SamplePos, SamplePos, double, double,
                           const std::function<bool(float)>&) -> std::optional<juce::AudioBuffer<float>> {
                            return std::nullopt;
                        });
@@ -549,4 +552,276 @@ TEST_CASE("exportMix: when the finished export cannot be put in place, nothing i
         tmp.deleteFile();
         out.deleteRecursively();
     }
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Stretched buffers that hold only part of a source
+// ---------------------------------------------------------------------------------------------------------------------
+TEST_CASE("renderMix: a stretched buffer of part of a source plays at its offset; outside it is silent")
+{
+    // Buffer = stretched-source samples [1000, 1100), holding 1 + index. The clip plays stretched [900, 1300) from
+    // timeline 50 on, so only timeline [150, 250) has audio.
+    auto buf = std::make_shared<juce::AudioBuffer<float>>(1, 100);
+    for (int i = 0; i < 100; ++i)
+        buf->setSample(0, i, 1.0f + (float) i);
+    auto c = mkClip("a", 50, 400);
+    c.stretch = 2.0;
+    c.sourceOffset = 900;
+    Track t;
+    t.clips.push_back(c);
+    auto s = mk({}, { t });
+    s->audio[bufferKey(c)] = buf;
+
+    for (SamplePos start : { SamplePos(1000), SamplePos(0), SamplePos(1300), SamplePos(5000), SamplePos(-5000) })
+    {
+        CAPTURE(start);
+        s->audioStart[bufferKey(c)] = start;
+        s->clipAudio = { { ClipBuffer { buf.get(), start } } };
+        CHECK(clipBufferFor(*s, c).start == start);
+        CHECK(clipBufferFor(*s, c).buffer == buf.get());
+        // In one block and in odd-sized blocks: the same, and never outside the buffer.
+        auto whole = render(*s, 0, 600);
+        juce::AudioBuffer<float> parts(2, 600);
+        parts.clear();
+        for (int pos = 0; pos < 600; pos += 37)
+            renderMix(*s, pos, parts, pos, std::min(37, 600 - pos));
+        for (int i = 0; i < 600; ++i)
+        {
+            // buffer index of timeline i
+            const SamplePos bi = c.sourceOffset + (i - c.start) - start;
+            const bool audible = i >= 50 && i < 450 && bi >= 0 && bi < 100;
+            const float expected = audible ? (1.0f + (float) bi) * k : 0.0f;
+            if (std::abs(whole.getSample(0, i) - expected) > 1e-4f || parts.getSample(0, i) != whole.getSample(0, i))
+            {
+                CAPTURE(i, bi);
+                CHECK_THAT(whole.getSample(0, i), WithinAbs(expected, 1e-4));
+                CHECK(parts.getSample(0, i) == whole.getSample(0, i));
+            }
+        }
+        if (start == 1000)
+        {
+            CHECK_THAT(whole.getSample(0, 150), WithinAbs(1.0f * k, 1e-5));
+            CHECK_THAT(whole.getSample(0, 249), WithinAbs(100.0f * k, 1e-4));
+            CHECK(whole.getSample(0, 149) == 0.0f);
+            CHECK(whole.getSample(0, 250) == 0.0f);
+        }
+        else // the buffer lies wholly outside what the clip plays
+            CHECK(whole.getMagnitude(0, 600) == 0.0f);
+    }
+}
+
+namespace
+{
+// A 5 ms 2 kHz burst every half second (the first at 0.25 s), 30 s, mono, 48 kHz.
+juce::AudioBuffer<float> clickTrain30()
+{
+    juce::AudioBuffer<float> b(1, 30 * 48000);
+    b.clear();
+    for (int at = 12000; at + 240 < b.getNumSamples(); at += 24000)
+        for (int i = 0; i < 240; ++i)
+            b.setSample(0, at + i, 0.9f * (float) std::sin(2.0 * juce::MathConstants<double>::pi * 2000.0 * i / 48000.0));
+    return b;
+}
+
+// The click train imported into a pool, with one clip at ratio 2 playing its seconds [12, 17) from timeline 1000.
+struct RangeFixture
+{
+    juce::ScopedJuceInitialiser_GUI gui;
+    juce::File dir = juce::File::getSpecialLocation(juce::File::tempDirectory)
+                         .getChildFile("aligna_mxr_" + juce::Uuid().toString());
+    SourcePool pool;
+    Project p;
+    Clip clip;
+    RangeFixture()
+    {
+        dir.createDirectory();
+        const auto b = clickTrain30();
+        const auto f = dir.getChildFile("clicks.wav");
+        {
+            juce::WavAudioFormat wav;
+            std::unique_ptr<juce::OutputStream> os(f.createOutputStream());
+            REQUIRE(os != nullptr);
+            std::unique_ptr<juce::AudioFormatWriter> w(wav.createWriterFor(os.get(), 48000, 1, 32, {}, 0));
+            REQUIRE(w != nullptr);
+            os.release();
+            REQUIRE(w->writeFromAudioSampleBuffer(b, 0, b.getNumSamples()));
+        }
+        juce::String err;
+        auto info = pool.import(f, 48000, err);
+        REQUIRE(info.has_value());
+        p.sources.push_back(*info);
+        clip = mkClip(info->id, 1000, 5 * 48000 * 2);
+        clip.stretch = 2.0;
+        clip.sourceOffset = 12 * 48000 * 2;
+        Track t;
+        t.id = newId();
+        t.clips.push_back(clip);
+        p.tracks = { t };
+    }
+    ~RangeFixture() { dir.deleteRecursively(); }
+};
+
+// What the fake render below puts at index i of a whole-source render.
+float wholeValue(SamplePos i) { return 0.001f * (float) (1 + i % 997); }
+
+StretchCache::RenderFn fakeRangeRender(std::atomic<int>& calls, std::atomic<bool>& fail)
+{
+    return [&calls, &fail](const juce::AudioBuffer<float>& in, SamplePos srcBegin, SamplePos srcEnd, double,
+                           double ratio, const std::function<bool(float)>&) -> std::optional<juce::AudioBuffer<float>> {
+        ++calls;
+        if (fail.load())
+            return std::nullopt;
+        const auto start = stretchedIndex(srcBegin, ratio);
+        juce::AudioBuffer<float> out(in.getNumChannels(), (int) (stretchedIndex(srcEnd, ratio) - start));
+        for (int i = 0; i < out.getNumSamples(); ++i)
+            out.setSample(0, i, wholeValue(start + i));
+        return out;
+    };
+}
+
+// The lag in [-maxLag, maxLag] at which b[i + lag] best matches a[i] over i in [0, n): 0 if they are aligned.
+int bestLag(const float* a, const float* b, int n, int maxLag)
+{
+    int best = 0;
+    double peak = -1.0;
+    for (int lag = -maxLag; lag <= maxLag; ++lag)
+    {
+        double sum = 0;
+        for (int i = 0; i < n; ++i)
+            sum += (double) a[i] * b[i + lag];
+        if (sum > peak)
+        {
+            peak = sum;
+            best = lag;
+        }
+    }
+    REQUIRE(peak > 0.0);
+    return best;
+}
+} // namespace
+
+TEST_CASE("makeSnapshot: a stretched clip plays a render of part of its source at the right place")
+{
+    RangeFixture f;
+    std::atomic<int> calls { 0 };
+    std::atomic<bool> fail { false };
+    StretchCache cache(size_t(2) << 30, fakeRangeRender(calls, fail));
+    cache.require(f.p, f.pool);
+    cache.waitForIdle();
+    const auto key = bufferKey(f.clip);
+    const auto got = cache.find(key);
+    REQUIRE(got.data != nullptr);
+    REQUIRE(got.start == 10 * 48000 * 2); // source [10 s, 20 s) of 30 s
+    REQUIRE(got.data->getNumSamples() == 10 * 48000 * 2);
+
+    auto s = makeSnapshot(f.p, f.pool, cache);
+    CHECK(s->audio.at(key) == got.data);
+    CHECK(s->audioStart.at(key) == got.start);
+    REQUIRE(s->clipAudio.size() == 1);
+    REQUIRE(s->clipAudio[0].size() == 1);
+    CHECK(s->clipAudio[0][0].buffer == got.data.get());
+    CHECK(s->clipAudio[0][0].start == got.start);
+    CHECK(s->partialStretch.empty());
+    CHECK(s->failedStretch.empty());
+
+    // Timeline t plays index sourceOffset + (t - start) of the whole stretched source, wherever the buffer begins.
+    const int n = (int) f.clip.length + 2000;
+    auto b = render(*s, 0, n);
+    for (int t : { 0, 999, 1000, 1001, 250000, 480999, 481000, 481500 })
+    {
+        CAPTURE(t);
+        const bool inClip = t >= 1000 && t < 1000 + f.clip.length;
+        const float expected = inClip ? wholeValue(f.clip.sourceOffset + (t - 1000)) * k : 0.0f;
+        CHECK_THAT(b.getSample(0, t), WithinAbs(expected, 1e-6));
+    }
+
+    SECTION("a split clip stays continuous: both halves play the one buffer")
+    {
+        auto p2 = f.p;
+        const SamplePos at = 1000 + 123457;
+        auto rightId = splitClip(p2, f.clip.id, at);
+        REQUIRE(rightId.has_value());
+        cache.require(p2, f.pool);
+        CHECK_FALSE(cache.isPending(key));
+        cache.waitForIdle();
+        CHECK(calls == 1); // nothing rendered again
+        auto s2 = makeSnapshot(p2, f.pool, cache);
+        REQUIRE(s2->clipAudio[0].size() == 2);
+        CHECK(s2->clipAudio[0][0].buffer == s2->clipAudio[0][1].buffer);
+        CHECK(s2->clipAudio[0][0].start == s2->clipAudio[0][1].start);
+        auto b2 = render(*s2, 0, n);
+        for (int i = 0; i < n; ++i)
+            if (b2.getSample(0, i) != b.getSample(0, i) || b2.getSample(1, i) != b.getSample(1, i))
+            {
+                CAPTURE(i);
+                FAIL("the split clip does not play what the unsplit clip played");
+            }
+        // In particular across the split point.
+        CHECK(b2.getSample(0, (int) at - 1) == wholeValue(f.clip.sourceOffset + (at - 1 - 1000)) * k);
+        CHECK(b2.getSample(0, (int) at) == wholeValue(f.clip.sourceOffset + (at - 1000)) * k);
+    }
+    SECTION("a clip grown beyond the buffer plays what is there, the rest is silent and it is listed as partial")
+    {
+        auto p2 = f.p;
+        auto& c = p2.tracks[0].clips[0];
+        c.length = 12 * 48000 * 2; // source [12 s, 24 s): 4 s more than the buffer holds
+        fail = true;               // and the larger render fails
+        auto partial = makeSnapshot(p2, f.pool, cache); // before the cache was even asked
+        CHECK(partial->partialStretch.count(key) == 1);
+        CHECK(partial->failedStretch.empty());
+        CHECK(partial->audio.count(key) == 1);
+        CHECK(countStretching(p2, f.pool, cache) == 1);
+
+        const SamplePos bufEnd = 1000 + (got.start + got.data->getNumSamples() - c.sourceOffset); // on the timeline
+        auto pb = render(*partial, bufEnd - 4096, 8192);
+        CHECK_THAT(pb.getSample(0, 4095), WithinAbs(wholeValue(got.start + got.data->getNumSamples() - 1) * k, 1e-6));
+        CHECK(pb.getMagnitude(0, 4096, 4096) == 0.0f);
+        CHECK(pb.getMagnitude(1, 4096, 4096) == 0.0f);
+
+        cache.require(p2, f.pool);
+        cache.waitForIdle();
+        REQUIRE(cache.hasFailed(key));
+        auto failed = makeSnapshot(p2, f.pool, cache);
+        CHECK(failed->failedStretch.count(key) == 1);
+        CHECK(failed->partialStretch.empty());
+        CHECK(failed->audio.count(key) == 1); // the old buffer still plays
+        CHECK(countStretching(p2, f.pool, cache) == 0);
+        CHECK(countStretchFailed(p2, f.pool, cache) == 1);
+    }
+}
+
+TEST_CASE("makeSnapshot: a render of part of a source plays in time with a render of the whole source")
+{
+    RangeFixture f;
+    StretchCache cache; // Rubber Band
+    cache.require(f.p, f.pool);
+    cache.waitForIdle();
+    const auto got = cache.find(bufferKey(f.clip));
+    REQUIRE(got.data != nullptr);
+    REQUIRE(got.start == 10 * 48000 * 2);
+    REQUIRE(got.data->getNumSamples() == 10 * 48000 * 2); // a third of the whole stretched source
+
+    const auto whole = stretchBuffer(*f.pool.get(f.clip.sourceId), 48000, 2.0);
+    REQUIRE(whole.has_value());
+
+    auto s = makeSnapshot(f.p, f.pool, cache);
+    auto b = render(*s, f.clip.start, (int) f.clip.length); // b[i] plays whole-render index sourceOffset + i
+    // Every click the clip plays (12.25 s ... 16.75 s of the source) sits where it does in the whole render.
+    int clicks = 0;
+    for (SamplePos at = 12000; at < 30 * 48000; at += 24000)
+    {
+        const SamplePos mid = (at + 120) * 2;
+        const SamplePos w0 = mid - 4800, w1 = mid + 4800; // +/- 100 ms around the click
+        if (w0 - 300 < f.clip.sourceOffset || w1 + 300 > f.clip.sourceOffset + f.clip.length)
+            continue;
+        const int lag = bestLag(whole->getReadPointer(0) + w0, b.getReadPointer(0) + (w0 - f.clip.sourceOffset), 9600, 300);
+        CAPTURE(at, lag);
+        CHECK(std::abs(lag) <= 2);
+        ++clicks;
+    }
+    CHECK(clicks == 10);
+    // Same level too: the part render is the same audio, not just the same timing.
+    const double rms = whole->getRMSLevel(0, (int) f.clip.sourceOffset, (int) f.clip.length) * k;
+    CHECK(rms > 0.001);
+    CHECK_THAT(b.getRMSLevel(0, 0, (int) f.clip.length), WithinAbs(rms, 0.1 * rms));
 }
