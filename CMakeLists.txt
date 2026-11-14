@@ -7,7 +7,7 @@ if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin")
   set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "macOS architectures")
   set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version")
 endif()
-project(Aligna VERSION 0.2.0 LANGUAGES C CXX)
+project(Aligna VERSION 0.2.1 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -47,7 +47,7 @@ set(ALIGNA_JUCE_DEFS
   JUCE_STRICT_REFCOUNTEDPOINTER=1
   JUCE_DISPLAY_SPLASH_SCREEN=0
   JUCE_APPLICATION_NAME_STRING="Aligna"
-  JUCE_APPLICATION_VERSION_STRING="0.2.0")
+  JUCE_APPLICATION_VERSION_STRING="0.2.1")
 
 # ---------------------------------------------------------------------------
 # aligna_core: static library. Later tasks append files to the target_sources
