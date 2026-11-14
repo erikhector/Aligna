@@ -22,7 +22,8 @@ public:
 
     // Asks about unsaved changes (async), then quits the application. Safe to call repeatedly.
     void requestQuit();
-    // Closes every dialog this window owns (Audio settings, Align, export progress). Called before shutdown.
+    // Closes every dialog this window owns (Audio settings, Align, export and load progress) and abandons a load
+    // that is still running. Called before shutdown.
     void closeDialogs();
 
     // MenuBarModel. Menus: File, Edit.
@@ -42,6 +43,16 @@ private:
     juce::PopupMenu fileMenu();
     juce::PopupMenu editMenu();
     void importAndReport(const juce::Array<juce::File>&);
+    // Decodes the load's audio on a background thread behind a modal progress window with Cancel, then (message
+    // thread) runs beforeCommit unless cancelled, finishes the load in the controller and calls
+    // done(the controller's message, cancelled). Nothing is called if this component is gone by then.
+    void startLoad(std::shared_ptr<PendingLoad> load, const juce::String& title,
+                   std::function<void(const juce::String& message, bool cancelled)> done,
+                   std::function<void()> beforeCommit = {});
+    // Stops the recording at once and adds the take behind a progress window. report(message), possibly empty.
+    void stopRecording(std::function<void(const juce::String& message)> report);
+    void reportUnloadedSources(); // after an open: the sources that are missing or could not be decoded
+    bool busy() const { return app.isRecording() || app.isLoading(); } // the project must not be changed
     void undo();
     void redo();
     void chooseImport();
@@ -74,6 +85,7 @@ private:
     std::vector<std::unique_ptr<TrackHeader>> headers;
     std::unique_ptr<juce::FileChooser> chooser;
     std::unique_ptr<juce::ThreadWithProgressWindow> exportTask;
+    std::unique_ptr<juce::ThreadWithProgressWindow> loadTask; // import / open / take being decoded; at most one
     ExportSettings lastExport; // format + bitrate chosen last in this session, preselected next time
     bool promptActive = false;
     std::unique_ptr<juce::DialogWindow> alignWindow; // at most one, non-modal
