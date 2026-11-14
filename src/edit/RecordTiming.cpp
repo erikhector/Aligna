@@ -1,5 +1,7 @@
 #include "edit/RecordTiming.h"
 #include "model/Grid.h"
+#include <algorithm>
+#include <cmath>
 
 namespace aligna
 {

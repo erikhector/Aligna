@@ -150,6 +150,13 @@ target_sources(Aligna PRIVATE
   src/ui/ClipTempoDialog.cpp
   src/ui/MainComponent.cpp
 )
+# Microphone permission: AVFoundation on macOS, a trivial always-granted version elsewhere.
+if(APPLE)
+  target_sources(Aligna PRIVATE src/app/MicPermission_mac.mm)
+  target_link_libraries(Aligna PRIVATE "-framework AVFoundation")
+else()
+  target_sources(Aligna PRIVATE src/app/MicPermission.cpp)
+endif()
 target_compile_definitions(Aligna PRIVATE JUCE_STANDALONE_APPLICATION=1)
 target_link_libraries(Aligna
   PRIVATE

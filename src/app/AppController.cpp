@@ -1,4 +1,5 @@
 #include "app/AppController.h"
+#include "app/MicPermission.h"
 #include "edit/ClipOps.h"
 #include "io/ProjectFile.h"
 #include "io/TakeFiles.h"
@@ -10,7 +11,6 @@ namespace aligna
 namespace
 {
 const juce::String noInputMessage = "No audio input available. Choose one in Audio Settings.";
-constexpr juce::int64 minFreeBytes = 50 * 1024 * 1024;
 
 // The saved setup enables an input channel (JUCE writes "audioDeviceInChans" only for explicit channels).
 bool savedHasInputs(const juce::XmlElement* xml)
@@ -154,7 +154,8 @@ int AppController::activeInputChannels() const
 
 bool AppController::enableFirstInput()
 {
-    auto setup = deviceManager.getAudioDeviceSetup();
+    const auto prev = deviceManager.getAudioDeviceSetup();
+    auto setup = prev;
     if (setup.inputDeviceName.isEmpty())
     {
         auto* type = deviceManager.getCurrentDeviceTypeObject();
@@ -169,7 +170,12 @@ bool AppController::enableFirstInput()
     setup.inputChannels.setBit(0);
     setup.useDefaultInputChannels = false;
     // Restarts the device; the chain's audioDeviceAboutToStart runs again with the new input.
-    return deviceManager.setAudioDeviceSetup(setup, true).isEmpty() && activeInputChannels() > 0;
+    if (deviceManager.setAudioDeviceSetup(setup, true).isEmpty() && activeInputChannels() > 0)
+        return true;
+    // A failed open deletes the current device, output included: go back to the previous setup, without
+    // saving the failed attempt as the user's choice.
+    deviceManager.setAudioDeviceSetup(prev, false);
+    return false;
 }
 
 void AppController::startRecording(std::function<void(juce::String error)> done)
@@ -180,14 +186,10 @@ void AppController::startRecording(std::function<void(juce::String error)> done)
             done({});
         return;
     }
-    if (activeInputChannels() > 0)
-    {
-        beginRecording(done);
-        return;
-    }
     permissionPending = true;
     juce::WeakReference<AppController> self(this);
-    juce::RuntimePermissions::request(juce::RuntimePermissions::recordAudio, [self, done](bool granted) {
+    // Every time: an open input does not mean permission (macOS gives silence when it is denied).
+    requestMicrophoneAccess([self, done](bool granted) {
         // May arrive later (permission prompt): the controller may be gone, or be recording by then.
         juce::MessageManager::callAsync([self, done, granted] {
             auto* c = self.get();
@@ -200,7 +202,7 @@ void AppController::startRecording(std::function<void(juce::String error)> done)
                     done({});
                 return;
             }
-            if (!granted || !c->enableFirstInput())
+            if (!granted || (c->activeInputChannels() <= 0 && !c->enableFirstInput()))
             {
                 if (done)
                     done(noInputMessage);
@@ -307,7 +309,7 @@ void AppController::timerCallback()
         return;
     }
     const bool failed = recorder.hasFailed();
-    const bool diskFull = !failed && recordFile.getParentDirectory().getBytesFreeOnVolume() < minFreeBytes;
+    const bool diskFull = !failed && isDiskAlmostFull(recordFile.getParentDirectory().getBytesFreeOnVolume());
     if (!failed && !diskFull)
         return;
 

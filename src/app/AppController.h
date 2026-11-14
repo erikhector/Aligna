@@ -35,7 +35,8 @@ public:
     bool isRecording() const { return recording; }
     SamplePos recordingStart() const { return recordStart; } // valid while recording
     float inputPeak() { return recorder.getAndResetPeak(); }
-    // done(error): empty error = started. May be called later (permission prompt). Already recording: done({}).
+    // done(error): empty error = started. Called later, after the microphone permission check (which may prompt).
+    // Already recording or a check pending: done({}) at once.
     void startRecording(std::function<void(juce::String error)> done);
     // Stops, keeps the take file and adds the take as one "Record" step. Returns a message for the user, empty
     // if all went well. Not recording: returns {}.

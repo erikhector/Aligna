@@ -19,4 +19,9 @@ std::map<juce::String, juce::String> relocateTakes(const juce::File& from, const
                                                    juce::String& error);
 // Rewrites SourceInfo::path where it matches a key of the map.
 void applyRelocation(Project&, const std::map<juce::String, juce::String>&);
+// Recording stops below this much free space.
+constexpr juce::int64 kMinFreeRecordingBytes = 50 * 1024 * 1024;
+// True only when 0 < freeBytes < kMinFreeRecordingBytes. JUCE reports 0 when it cannot tell, so
+// freeBytes <= 0 means unknown and is not treated as full.
+bool isDiskAlmostFull(juce::int64 freeBytes);
 } // namespace aligna

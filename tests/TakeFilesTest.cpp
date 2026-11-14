@@ -111,3 +111,13 @@ TEST_CASE("undo, save, redo keeps the moved path", "[takes]")
     REQUIRE(juce::File(path).getParentDirectory() == to);
     REQUIRE(juce::File(path).existsAsFile());
 }
+
+TEST_CASE("isDiskAlmostFull treats unknown free space as not full", "[takes]")
+{
+    constexpr juce::int64 MB = 1024 * 1024;
+    REQUIRE_FALSE(isDiskAlmostFull(0));
+    REQUIRE_FALSE(isDiskAlmostFull(-1));
+    REQUIRE(isDiskAlmostFull(49 * MB));
+    REQUIRE_FALSE(isDiskAlmostFull(50 * MB));
+    REQUIRE_FALSE(isDiskAlmostFull(1024 * MB));
+}
