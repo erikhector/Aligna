@@ -135,6 +135,8 @@ bool MainComponent::isInterestedInFileDrag(const juce::StringArray& files)
 
 void MainComponent::filesDropped(const juce::StringArray& files, int, int)
 {
+    if (app.isRecording())
+        return;
     juce::Array<juce::File> audio;
     for (auto& f : files)
         if (isAudioFile(f))
@@ -217,7 +219,31 @@ void MainComponent::requestQuit()
 {
     if (promptActive)
         return;
-    confirmDiscard([] { juce::JUCEApplication::quit(); });
+    // Stop here, not in the controller, so the user sees any message. The take is in the history before the save question.
+    juce::String msg = app.isRecording() ? app.stopRecording() : juce::String();
+    transport.refresh();
+    auto go = [safe = juce::Component::SafePointer<MainComponent>(this)] {
+        if (safe != nullptr)
+            safe->confirmDiscard([] { juce::JUCEApplication::quit(); });
+    };
+    if (msg.isEmpty())
+    {
+        go();
+        return;
+    }
+    promptActive = true; // a second quit request must not stack another prompt while this one is up
+    juce::AlertWindow::showAsync(juce::MessageBoxOptions()
+                                     .withIconType(juce::MessageBoxIconType::WarningIcon)
+                                     .withTitle("Recording")
+                                     .withMessage(msg)
+                                     .withButton("OK")
+                                     .withAssociatedComponent(this),
+                                 [safe = juce::Component::SafePointer<MainComponent>(this), go](int) {
+                                     if (safe == nullptr)
+                                         return;
+                                     safe->promptActive = false;
+                                     go();
+                                 });
 }
 
 void MainComponent::confirmDiscard(std::function<void()> proceed)
@@ -505,6 +531,8 @@ void MainComponent::startExport(const ExportSettings& settings, const juce::File
 
 void MainComponent::runFileCommand(int id)
 {
+    if (app.isRecording() && id != menuQuit)
+        return;
     switch (id)
     {
         case menuNew: confirmDiscard([this] { doNew(); }); break;
@@ -518,8 +546,16 @@ void MainComponent::runFileCommand(int id)
     }
 }
 
-void MainComponent::undo() { app.history().undo(); }
-void MainComponent::redo() { app.history().redo(); }
+void MainComponent::undo()
+{
+    if (! app.isRecording())
+        app.history().undo();
+}
+void MainComponent::redo()
+{
+    if (! app.isRecording())
+        app.history().redo();
+}
 
 juce::StringArray MainComponent::getMenuBarNames() { return { "File", "Edit" }; }
 
@@ -534,6 +570,7 @@ juce::PopupMenu MainComponent::fileMenu()
     auto add = [&](int id, const juce::String& name, const juce::String& key) {
         juce::PopupMenu::Item it(name);
         it.itemID = id;
+        it.isEnabled = ! app.isRecording() || id == menuQuit;
         if (key.isNotEmpty())
             it.shortcutKeyDescription = mod + key;
         m.addItem(it);
@@ -563,18 +600,18 @@ juce::PopupMenu MainComponent::editMenu()
     juce::PopupMenu m;
     juce::PopupMenu::Item u(h.canUndo() ? "Undo " + h.undoName() : juce::String("Undo"));
     u.itemID = menuUndo;
-    u.isEnabled = h.canUndo();
+    u.isEnabled = h.canUndo() && ! app.isRecording();
     u.shortcutKeyDescription = juce::String(mod) + "Z";
     m.addItem(u);
     juce::PopupMenu::Item r(h.canRedo() ? "Redo " + h.redoName() : juce::String("Redo"));
     r.itemID = menuRedo;
-    r.isEnabled = h.canRedo();
+    r.isEnabled = h.canRedo() && ! app.isRecording();
     r.shortcutKeyDescription = juce::String(mod) + "Shift+Z";
     m.addItem(r);
     m.addSeparator();
     juce::PopupMenu::Item al("Align to Reference");
     al.itemID = menuAlign;
-    al.isEnabled = canAlign();
+    al.isEnabled = canAlign() && ! app.isRecording();
     al.shortcutKeyDescription = juce::String(mod) + "L";
     m.addItem(al);
     return m;
@@ -596,7 +633,10 @@ void MainComponent::menuItemSelected(int id, int)
     else if (id == menuRedo)
         redo();
     else if (id == menuAlign)
-        openAlignDialog();
+    {
+        if (! app.isRecording())
+            openAlignDialog();
+    }
     else
         runFileCommand(id);
     if (alignWindow == nullptr)
@@ -613,6 +653,22 @@ bool MainComponent::keyPressed(const juce::KeyPress& k)
     const auto mods = k.getModifiers();
     const bool cmd = mods.isCommandDown() || mods.isCtrlDown();
     const auto code = juce::CharacterFunctions::toUpperCase((juce::juce_wchar) k.getKeyCode()); // may arrive lowercase
+    if (code == 'R' && ! cmd && ! mods.isAltDown() && ! mods.isShiftDown())
+    {
+        transport.toggleRecord();
+        return true;
+    }
+    if (app.isRecording())
+    {
+#if ! JUCE_MAC
+        if (cmd && code == 'Q')
+        {
+            runFileCommand(menuQuit);
+            return true;
+        }
+#endif
+        return false; // nothing else while recording
+    }
     if (cmd && code == 'Z')
     {
         if (mods.isShiftDown())

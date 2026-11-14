@@ -141,6 +141,8 @@ target_sources(Aligna PRIVATE
   src/app/Main.cpp
   src/app/AppController.cpp
   src/app/AppSettings.cpp
+  src/ui/InputMeter.cpp
+  src/ui/AudioSettingsPanel.cpp
   src/ui/TransportBar.cpp
   src/ui/TrackHeader.cpp
   src/ui/TimelineView.cpp

@@ -10,6 +10,7 @@ or automatically by cross-correlation), listen, and export the mix as WAV or MP3
 - Timeline with waveforms, zoom, beat grid and snapping; move, trim, split, delete and nudge clips (the later clip covers the earlier one where they overlap).
 - Per-track volume, pan, mute and solo; transport with play/pause/stop, BPM, time signature and grid settings.
 - Auto-align: pick a reference clip and shift other clips to match it by cross-correlation (shifts only, never stretches; reports inverted polarity). You confirm before anything moves.
+- Record a take over the project: the project plays while your input is recorded to a new track, compensated for latency.
 - Undo/redo for every edit.
 - Projects are saved as `.aligna` JSON files (audio paths relative to the project when possible). If audio files have moved, the project still opens, the missing clips are shown in red and the rest plays.
 - Export the mix as a stereo WAV (16- or 24-bit) or MP3 (192/256/320 kbps CBR; MP3 at the project rate (32/44.1/48 kHz), otherwise 44.1 kHz).
@@ -31,6 +32,7 @@ Use Cmd instead of Ctrl on macOS.
 | Ctrl+Shift+Z (Ctrl+Y on Windows/Linux) | Redo |
 | Ctrl+L | Align selected clips to the reference |
 | Space | Play / pause |
+| R | Record / stop recording |
 | S | Split selected clips at the playhead |
 | G | Toggle snap |
 | Left / Right | Nudge selected clips by 1 ms (Shift: 10 ms, Alt: 1 sample, Ctrl/Cmd: one grid step) |
@@ -66,6 +68,19 @@ Aligna can change a clip's speed without changing its pitch (Rubber Band, offlin
 5. Press Ctrl/Cmd+L, set the search range and press Align.
 6. Check the offset and confidence of each row, tick the clips to move and press Apply. Nothing moves until you press Apply; if you change the project meanwhile, the results are marked stale and you must align again.
 7. Press Space to listen; Ctrl/Cmd+Z undoes the alignment.
+
+### Recording a take
+
+1. Open Audio settings... in the transport bar, pick your input device and the input channels to record (one channel records mono, two record stereo), and watch the level meter while you play. With no input available, Rec shows "No audio input available. Choose one in Audio Settings."
+2. Press R or the Rec button. By default Aligna plays a one-bar count-in (pre-roll) before the recording point, then records while the project plays. Set Pre-roll to "Off" in Audio settings to start at the playhead at once.
+3. Press R, Space or Stop to finish. The take becomes a new track named "Take 1", "Take 2" and so on, added as one undo step called "Record". Takes shorter than 0.1 s are discarded with a message.
+4. While recording you cannot edit the project, move the playhead, change the tempo or time signature, or change the audio device; Ctrl/Cmd+Q still quits (the take is kept).
+
+Where the take files go: for a saved project, next to it in a folder named "`<project name>` Takes". For an unsaved project, in the "Aligna/Unsaved Takes" folder inside your user application data folder, in a subfolder per session; the first time you save, those files are moved next to the project. Aligna never deletes take files automatically, including discarded or unused ones.
+
+Monitoring: Aligna does not play your input back. Use direct (hardware) monitoring on your audio interface to hear yourself without delay.
+
+Latency offset: Aligna compensates for the latency the driver reports. If takes still sit early or late against the project, set Audio settings > Recording > Latency offset (ms): record a click together with a click track, zoom in, and compare the take with the click track. If the take is late, enter a positive value (it is moved earlier by that amount); if it is early, enter a negative one. The value is per machine and is not saved in the project.
 
 ## Building
 
