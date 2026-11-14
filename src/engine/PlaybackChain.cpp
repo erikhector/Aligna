@@ -88,7 +88,9 @@ void PlaybackChain::audioDeviceAboutToStart(juce::AudioIODevice* d)
 
 void PlaybackChain::audioDeviceStopped()
 {
-    if (auto* r = recorder.load(); r != nullptr && r->isCapturing())
+    // A pending arm would otherwise start the take on a restarted device, possibly at another rate: fail it.
+    const bool wasArmed = armed.exchange(false, std::memory_order_acq_rel);
+    if (auto* r = recorder.load(); r != nullptr && (wasArmed || r->isCapturing()))
         r->deviceStopped();
     player.audioDeviceStopped();
 }

@@ -5,6 +5,7 @@
 #include "support/FakeAudioDevice.h"
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
+#include <algorithm>
 #include <cmath>
 #include <memory>
 
@@ -48,10 +49,10 @@ struct Run
     double chainDelay = 0;
 };
 
-// Drives a fresh engine + chain the way a device would: aboutToStart, a few idle callbacks, prepareStart(0), arm,
+// Drives a fresh engine + chain the way a device would: aboutToStart, a few idle callbacks, prepareStart(start), arm,
 // then `numBlocks` callbacks. The input of device sample n is feed[n - loopDelay] (zero before), or silence without a feed.
 Run runChain(double deviceRate, Recorder* recorder, const std::vector<float>* feed, int numBlocks,
-             bool stopDevice = false)
+             bool stopDevice = false, SamplePos start = 0)
 {
     test::FakeAudioDevice dev({ deviceRate, blockSize, 1, 2, inputLatency, outputLatency });
     PlaybackEngine engine;
@@ -68,7 +69,7 @@ Run runChain(double deviceRate, Recorder* recorder, const std::vector<float>* fe
         chain.audioDeviceIOCallbackWithContext(in.getArrayOfReadPointers(), 1, out.getArrayOfWritePointers(), 2,
                                                blockSize, {});
 
-    engine.prepareStart(0);
+    engine.prepareStart(start);
     chain.armRecording();
 
     Run r;
@@ -107,25 +108,26 @@ SamplePos peakIndex(const juce::AudioBuffer<float>& b)
 TEST_CASE("Recorded click lands on the project click", "[loopback]")
 {
     const double deviceRate = GENERATE(48000.0, 44100.0);
-    const SamplePos recordStart = GENERATE(SamplePos(96000), SamplePos(48000)); // a bar, and half a bar (clamped)
+    // A bar, half a bar (pre-roll clamped at 0), and a bar and a half (pre-roll starts at 48000).
+    const SamplePos recordStart = GENERATE(SamplePos(96000), SamplePos(48000), SamplePos(144000));
     CAPTURE(deviceRate, recordStart);
 
     Project p;
     const auto preroll = prerollStart(p, recordStart, true);
-    REQUIRE(preroll == 0);
+    REQUIRE(preroll == std::max<SamplePos>(0, recordStart - 96000)); // a bar is 96000 at 120 bpm, 4/4
 
     const int numBlocks = (int) std::ceil(4.0 * deviceRate / blockSize);
 
     // The chain's output does not depend on its input, so a first pass captures the output stream; the
     // recording pass then hears that stream through the delay line, which keeps the loop causal although the
     // delay (256) is shorter than a block (480). Both passes must produce the same output.
-    const auto dry = runChain(deviceRate, nullptr, nullptr, numBlocks);
+    const auto dry = runChain(deviceRate, nullptr, nullptr, numBlocks, false, preroll);
 
     auto file = juce::File::createTempFile(".wav");
     Recorder recorder;
     juce::String error;
     REQUIRE(recorder.open(file, deviceRate, 1, error));
-    const auto wet = runChain(deviceRate, &recorder, &dry.left, numBlocks);
+    const auto wet = runChain(deviceRate, &recorder, &dry.left, numBlocks, false, preroll);
     const auto res = recorder.close();
     REQUIRE_FALSE(recorder.hasFailed());
     REQUIRE(wet.left == dry.left);

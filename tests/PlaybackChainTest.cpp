@@ -1,4 +1,5 @@
 #include "engine/PlaybackChain.h"
+#include "engine/Recorder.h"
 #include "support/FakeAudioDevice.h"
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
@@ -85,4 +86,38 @@ TEST_CASE("PlaybackChain arm is consumed by the next callback and starts the eng
     engine.stop();
     CHECK(engine.getPosition() == 1000);
     chain.audioDeviceStopped();
+}
+
+TEST_CASE("PlaybackChain device stop before a pending arm fires fails the take", "[engine]")
+{
+    aligna::test::FakeAudioDevice dev({ 48000.0, 64, 1, 2, 0, 0 });
+    PlaybackEngine engine;
+    PlaybackChain chain(engine, 48000.0);
+    auto file = juce::File::createTempFile(".wav");
+    Recorder recorder;
+    juce::String error;
+    REQUIRE(recorder.open(file, 48000.0, 1, error));
+    chain.setRecorder(&recorder);
+    chain.audioDeviceAboutToStart(&dev);
+    engine.prepareStart(1000);
+    chain.armRecording();
+    REQUIRE(chain.isArmed());
+
+    chain.audioDeviceStopped(); // before any callback consumed the arm
+    CHECK_FALSE(chain.isArmed());
+    CHECK(recorder.hasFailed());
+    CHECK_FALSE(recorder.isCapturing());
+    CHECK_FALSE(engine.isPlaying());
+
+    // A restarted device must not start the take.
+    chain.audioDeviceAboutToStart(&dev);
+    juce::AudioBuffer<float> in(1, 64), out(2, 64);
+    in.clear();
+    chain.audioDeviceIOCallbackWithContext(in.getArrayOfReadPointers(), 1, out.getArrayOfWritePointers(), 2, 64, {});
+    CHECK_FALSE(engine.isPlaying());
+    CHECK_FALSE(recorder.isCapturing());
+    chain.audioDeviceStopped();
+    chain.setRecorder(nullptr);
+    recorder.close();
+    file.deleteFile();
 }

@@ -134,10 +134,13 @@ target_link_libraries(aligna_core
 juce_add_gui_app(Aligna
   PRODUCT_NAME "Aligna"
   COMPANY_NAME "Aligna"
+  MICROPHONE_PERMISSION_ENABLED TRUE
+  MICROPHONE_PERMISSION_TEXT "Aligna uses audio input to record takes."
   VERSION ${PROJECT_VERSION})
 target_sources(Aligna PRIVATE
   src/app/Main.cpp
   src/app/AppController.cpp
+  src/app/AppSettings.cpp
   src/ui/TransportBar.cpp
   src/ui/TrackHeader.cpp
   src/ui/TimelineView.cpp

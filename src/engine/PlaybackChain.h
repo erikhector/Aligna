@@ -25,6 +25,8 @@ public:
     // and starts the engine, so input sample 0 of the take is captured in the callback that plays the start.
     void armRecording() { armed.store(true, std::memory_order_release); }
     bool isArmed() const { return armed.load(std::memory_order_acquire); }
+    // Message thread: cancels a pending arm. Returns true if one was pending.
+    bool disarm() { return armed.exchange(false, std::memory_order_acq_rel); }
 
     // Set in audioDeviceAboutToStart.
     double getDeviceRate() const { return deviceRate.load(); }
