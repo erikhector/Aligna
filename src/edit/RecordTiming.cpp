@@ -5,7 +5,12 @@
 
 namespace aligna
 {
-double clampLatencyOffsetMs(double ms) { return std::clamp(ms, kMinLatencyOffsetMs, kMaxLatencyOffsetMs); }
+double clampLatencyOffsetMs(double ms)
+{
+    if (!std::isfinite(ms)) // std::clamp passes NaN through
+        return 0.0;
+    return std::clamp(ms, kMinLatencyOffsetMs, kMaxLatencyOffsetMs);
+}
 
 SamplePos prerollStart(const Project& p, SamplePos recordStart, bool prerollOn)
 {
@@ -41,10 +46,16 @@ std::optional<TakePlacement> placeTake(SamplePos preroll, SamplePos recordStart,
 
 juce::String nextTakeName(const Project& p)
 {
+    // Numbers of more than 9 digits are not counted, so highest + 1 always fits in an int.
+    constexpr int kMaxTakeDigits = 9;
     int highest = 0;
     for (auto& t : p.tracks)
-        if (t.name.startsWith("Take ") && t.name.substring(5).containsOnly("0123456789") && t.name.length() > 5)
-            highest = std::max(highest, t.name.substring(5).getIntValue());
+    {
+        auto digits = t.name.substring(5);
+        if (t.name.startsWith("Take ") && digits.isNotEmpty() && digits.length() <= kMaxTakeDigits
+            && digits.containsOnly("0123456789"))
+            highest = std::max(highest, digits.getIntValue());
+    }
     return "Take " + juce::String(highest + 1);
 }
 } // namespace aligna

@@ -10,7 +10,7 @@ struct TakePlacement
 };
 
 constexpr double kMinLatencyOffsetMs = -500.0, kMaxLatencyOffsetMs = 500.0;
-double clampLatencyOffsetMs(double ms);
+double clampLatencyOffsetMs(double ms); // NaN and infinities give 0
 
 // One bar before recordStart when pre-roll is on (clamped at 0), else recordStart.
 SamplePos prerollStart(const Project&, SamplePos recordStart, bool prerollOn);
@@ -28,6 +28,6 @@ SamplePos totalLatency(const LatencyInputs&);
 std::optional<TakePlacement> placeTake(SamplePos prerollStart, SamplePos recordStart, SamplePos latency,
                                        SamplePos recordedLength, double projectRate);
 
-// "Take N", N = 1 + highest existing track named "Take <integer>".
+// "Take N", N = 1 + highest existing track named "Take <integer>" (integers of up to 9 digits).
 juce::String nextTakeName(const Project&);
 } // namespace aligna
