@@ -70,6 +70,9 @@ private:
     struct Thumb
     {
         AudioData data; // keeps the buffer alive; pointer identity detects replacement
+        // Index, in the whole (stretched) source, of data's first sample: not 0 for a stretched buffer that holds
+        // only part of the source. A render of another part is a new buffer, so the thumbnail is rebuilt with it.
+        SamplePos start = 0;
         std::unique_ptr<juce::AudioThumbnail> thumb;
     };
 
