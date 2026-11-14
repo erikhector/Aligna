@@ -15,6 +15,10 @@ juce::String exportFileName(const juce::String& name, const juce::String& ext);
 
 // "These audio files could not be found:" + one path per line (max 20, then "…and N more"). Empty if none.
 juce::String missingFilesMessage(const std::vector<juce::String>& paths);
+
+// The project file named on the command line: the first argument that is not an option (does not start with
+// '-'), without surrounding quotes, resolved against `workingDir` when relative. juce::File() if there is none.
+juce::File projectFileFromArgs(const juce::StringArray& args, const juce::File& workingDir);
 } // namespace aligna
 
 namespace aligna

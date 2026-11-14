@@ -60,3 +60,16 @@ TEST_CASE("isProjectSource matches source paths only")
     REQUIRE(! isProjectSource(p, juce::File("/other/take1.wav")));
     REQUIRE(! isProjectSource(Project {}, juce::File("/music/take1.wav")));
 }
+
+TEST_CASE("projectFileFromArgs picks the first file argument")
+{
+    const auto cwd = juce::File::getSpecialLocation(juce::File::tempDirectory);
+    const auto abs = cwd.getChildFile("my song.aligna");
+    CHECK(projectFileFromArgs({}, cwd) == juce::File());
+    CHECK(projectFileFromArgs({ "-psn_0_1", "--flag" }, cwd) == juce::File());
+    CHECK(projectFileFromArgs({ "", "  " }, cwd) == juce::File());
+    CHECK(projectFileFromArgs({ abs.getFullPathName() }, cwd) == abs);
+    CHECK(projectFileFromArgs({ "\"" + abs.getFullPathName() + "\"" }, cwd) == abs);
+    CHECK(projectFileFromArgs({ "--flag", abs.getFullPathName(), "other.aligna" }, cwd) == abs);
+    CHECK(projectFileFromArgs({ "sub/a.aligna" }, cwd) == cwd.getChildFile("sub").getChildFile("a.aligna"));
+}

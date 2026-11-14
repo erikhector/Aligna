@@ -158,3 +158,16 @@ TEST_CASE("ClipOps addTakeTrack places the clip", "[ClipOps]")
     CHECK(c.gainDb == 0.0f);
     CHECK(p.sources.size() == 1);
 }
+
+TEST_CASE("ClipOps removeTrackById removes that track and its clips only", "[ClipOps]")
+{
+    Fx f;
+    const auto first = f.p.tracks[0].id;
+    REQUIRE_FALSE(removeTrackById(f.p, "no such track"));
+    REQUIRE(f.p.tracks.size() == 2);
+    REQUIRE(removeTrackById(f.p, first));
+    REQUIRE(f.p.tracks.size() == 1);
+    CHECK(f.p.tracks[0].id == "t2");
+    CHECK(findClip(f.p, f.id) == nullptr);
+    REQUIRE_FALSE(removeTrackById(f.p, first));
+}

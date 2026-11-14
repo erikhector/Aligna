@@ -58,6 +58,7 @@ set(ALIGNA_JUCE_DEFS
 add_library(aligna_core STATIC)
 target_sources(aligna_core PRIVATE
   src/core/Version.cpp
+  src/core/UpdateCheck.cpp
   src/edit/ClipOps.cpp
   src/edit/DragMath.cpp
   src/edit/StretchMath.cpp
@@ -195,6 +196,7 @@ add_executable(aligna_tests
   tests/StretchCacheTest.cpp
   tests/StretchMathTest.cpp
   tests/Mp3EncoderTest.cpp
+  tests/UpdateCheckTest.cpp
 )
 target_link_libraries(aligna_tests PRIVATE aligna_core Catch2::Catch2WithMain)
 list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)

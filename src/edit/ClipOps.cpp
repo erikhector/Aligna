@@ -243,4 +243,12 @@ bool removeTrack(Project& p, int trackIndex)
     p.tracks.erase(p.tracks.begin() + trackIndex);
     return true;
 }
+
+bool removeTrackById(Project& p, const juce::String& trackId)
+{
+    for (size_t i = 0; i < p.tracks.size(); ++i)
+        if (p.tracks[i].id == trackId)
+            return removeTrack(p, (int) i);
+    return false;
+}
 } // namespace aligna

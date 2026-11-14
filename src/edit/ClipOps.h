@@ -19,4 +19,5 @@ bool setClipStretch(Project&, const juce::String& clipId, double newStretch);
 bool setClipTempo(Project&, const juce::String& clipId, double sourceBpm); // 0 clears the tempo, stretch stays
 bool setProjectBpm(Project&, double bpm); // also re-derives the stretch of every tempo clip
 bool removeTrack(Project&, int trackIndex);
+bool removeTrackById(Project&, const juce::String& trackId); // with all its clips; false if there is no such track
 } // namespace aligna

@@ -22,6 +22,18 @@ juce::String exportFileName(const juce::String& name, const juce::String& ext)
     return withExtension(name, ext);
 }
 
+juce::File projectFileFromArgs(const juce::StringArray& args, const juce::File& workingDir)
+{
+    for (auto& raw : args)
+    {
+        const auto arg = raw.trim().unquoted().trim();
+        if (arg.isEmpty() || arg.startsWithChar('-'))
+            continue;
+        return juce::File::isAbsolutePath(arg) ? juce::File(arg) : workingDir.getChildFile(arg);
+    }
+    return {};
+}
+
 juce::String missingFilesMessage(const std::vector<juce::String>& paths)
 {
     if (paths.empty())
