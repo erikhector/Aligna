@@ -1,11 +1,81 @@
 #include "io/ProjectFile.h"
+#include <algorithm>
 #include <cmath>
+#include <set>
+#if !JUCE_WINDOWS
+#include <sys/stat.h>
+#endif
 
 namespace aligna
 {
 namespace
 {
 constexpr int kFormat = 2;
+
+// Limits for files we are willing to load. A project file may come from anyone.
+constexpr juce::int64 kMaxFileBytes = 64 * 1024 * 1024;
+constexpr int kMaxJsonDepth = 64; // a valid project nests 4 deep
+// 24 hours at 384 kHz. Sums of a few positions stay far below the int64 range.
+constexpr SamplePos kMaxSamplePos = 24LL * 3600 * 384000;
+constexpr int kMaxSources = 10'000, kMaxTracks = 10'000, kMaxClips = 1'000'000;
+// Same ranges as the track header sliders (TrackHeader.cpp) and setClipGain (ClipOps.cpp).
+constexpr double kMinGainDb = -60.0, kMaxGainDb = 12.0;
+constexpr double kMinPan = -1.0, kMaxPan = 1.0;
+
+float gainFromFile(double db) { return static_cast<float>(std::clamp(db, kMinGainDb, kMaxGainDb)); }
+float panFromFile(double pan) { return static_cast<float>(std::clamp(pan, kMinPan, kMaxPan)); }
+
+// True for UNC paths (two leading slashes of either kind, as in //host/share).
+// Looking at such a path can start a network connection.
+bool isNetworkPath(const juce::String& path)
+{
+    auto isSlash = [](juce::juce_wchar c) { return c == '/' || c == '\\'; };
+    return path.length() >= 2 && isSlash(path[0]) && isSlash(path[1]);
+}
+
+// A regular file, or a link to one. A FIFO or a device is not: opening it could block forever.
+bool isRegularFile(const juce::File& f)
+{
+#if JUCE_WINDOWS
+    return f.existsAsFile();
+#else
+    struct stat st;
+    return stat(f.getFullPathName().toRawUTF8(), &st) == 0 && S_ISREG(st.st_mode);
+#endif
+}
+
+// Deepest nesting of [ ] and { } outside strings. The JSON parser recurses once per level,
+// so this is checked before parsing. Stops counting once the depth passes maxDepth.
+int jsonNestingDepth(const juce::String& text, int maxDepth)
+{
+    int depth = 0, deepest = 0;
+    juce::juce_wchar quote = 0; // the open quote character while inside a string
+    for (auto t = text.getCharPointer(); !t.isEmpty();)
+    {
+        const auto c = t.getAndAdvance();
+        if (quote != 0)
+        {
+            if (c == '\\')
+            {
+                if (!t.isEmpty())
+                    ++t;
+            }
+            else if (c == quote)
+                quote = 0;
+        }
+        else if (c == '"' || c == '\'') // the parser takes both kinds of quote
+            quote = c;
+        else if (c == '[' || c == '{')
+        {
+            deepest = std::max(deepest, ++depth);
+            if (deepest > maxDepth)
+                break;
+        }
+        else if (c == ']' || c == '}')
+            depth = std::max(0, depth - 1);
+    }
+    return deepest;
+}
 
 juce::var posToVar(SamplePos v) { return juce::String(static_cast<juce::int64>(v)); }
 
@@ -84,7 +154,13 @@ struct Reader
             error = "Key \"" + juce::String(key) + "\" is not a valid sample position: \"" + s + "\"" + ctx;
             return 0;
         }
-        return static_cast<SamplePos>(s.getLargeIntValue());
+        auto v = static_cast<SamplePos>(s.getLargeIntValue());
+        if (v > kMaxSamplePos)
+        {
+            error = "Key \"" + juce::String(key) + "\" is too large: \"" + s + "\"" + ctx;
+            return 0;
+        }
+        return v;
     }
 
     const juce::Array<juce::var>* array(const juce::var& obj, const char* key, const juce::String& ctx)
@@ -158,7 +234,8 @@ bool saveProject(const Project& p, const juce::File& file, juce::String& error)
     }
     root->setProperty("tracks", tracks);
 
-    auto text = juce::JSON::toString(rootVar);
+    // JSON::toString ends lines with CR LF; the file uses LF. Strings hold no raw line breaks.
+    auto text = juce::JSON::toString(rootVar).replace("\r\n", "\n");
 
     if (!projectDir.isDirectory())
     {
@@ -166,7 +243,19 @@ bool saveProject(const Project& p, const juce::File& file, juce::String& error)
         return false;
     }
     juce::TemporaryFile temp(file);
-    if (!temp.getFile().replaceWithText(text, false, false, "\n"))
+    // Every step is checked: a short write (disk full) must never replace the previous file.
+    const auto numBytes = text.getNumBytesAsUTF8();
+    bool written = false;
+    {
+        juce::FileOutputStream out(temp.getFile());
+        if (out.openedOk())
+        {
+            written = out.setPosition(0) && out.truncate().wasOk() && out.write(text.toRawUTF8(), numBytes);
+            out.flush();
+            written = written && out.getStatus().wasOk();
+        }
+    }
+    if (!written || temp.getFile().getSize() != static_cast<juce::int64>(numBytes))
     {
         error = "Could not write " + temp.getFile().getFullPathName();
         temp.getFile().deleteFile();
@@ -183,13 +272,24 @@ bool saveProject(const Project& p, const juce::File& file, juce::String& error)
 std::optional<Project> loadProject(const juce::File& file, juce::String& error)
 {
     error.clear();
-    if (!file.existsAsFile())
+    if (!isRegularFile(file))
     {
         error = "File not found: " + file.getFullPathName();
         return std::nullopt;
     }
+    if (file.getSize() > kMaxFileBytes)
+    {
+        error = "Not a valid project file: larger than " + juce::String(kMaxFileBytes / (1024 * 1024)) + " MB";
+        return std::nullopt;
+    }
+    auto text = file.loadFileAsString();
+    if (jsonNestingDepth(text, kMaxJsonDepth) > kMaxJsonDepth)
+    {
+        error = "Not a valid project file: nested more than " + juce::String(kMaxJsonDepth) + " levels deep";
+        return std::nullopt;
+    }
     juce::var root;
-    auto res = juce::JSON::parse(file.loadFileAsString(), root);
+    auto res = juce::JSON::parse(text, root);
     if (res.failed() || root.getDynamicObject() == nullptr)
     {
         error = "Not a valid project file: " + (res.failed() ? res.getErrorMessage() : juce::String("expected a JSON object"));
@@ -231,6 +331,12 @@ std::optional<Project> loadProject(const juce::File& file, juce::String& error)
 
     auto* sources = r.array(root, "sources", {});
     if (r.failed()) return fail();
+    if (sources->size() > kMaxSources)
+    {
+        error = "Too many sources: at most " + juce::String(kMaxSources) + " are supported";
+        return std::nullopt;
+    }
+    std::set<juce::String> sourceIds, trackIds, clipIds;
     for (auto& sv : *sources)
     {
         SourceInfo s;
@@ -246,26 +352,55 @@ std::optional<Project> loadProject(const juce::File& file, juce::String& error)
             return std::nullopt;
         }
         s.numChannels = static_cast<int>(nch);
-        juce::File f = juce::File::isAbsolutePath(path) ? juce::File(path) : projectDir.getChildFile(path);
-        s.path = f.getFullPathName();
-        s.missing = !f.existsAsFile();
+        if (!sourceIds.insert(s.id).second)
+        {
+            error = "Duplicate source id \"" + s.id + "\"";
+            return std::nullopt;
+        }
+        if (isNetworkPath(path))
+        {
+            // Never looked up: the path stays as written and the source counts as missing.
+            s.path = path;
+            s.missing = true;
+        }
+        else
+        {
+            juce::File f = juce::File::isAbsolutePath(path) ? juce::File(path) : projectDir.getChildFile(path);
+            s.path = f.getFullPathName();
+            s.missing = !isRegularFile(f);
+        }
         p.sources.push_back(std::move(s));
     }
 
     auto* tracks = r.array(root, "tracks", {});
     if (r.failed()) return fail();
+    if (tracks->size() > kMaxTracks)
+    {
+        error = "Too many tracks: at most " + juce::String(kMaxTracks) + " are supported";
+        return std::nullopt;
+    }
     for (auto& tv : *tracks)
     {
         Track t;
         auto ctx = inFile("tracks");
         t.id = r.str(tv, "id", ctx);
         t.name = r.str(tv, "name", ctx);
-        t.volumeDb = static_cast<float>(r.num(tv, "volumeDb", ctx));
-        t.pan = static_cast<float>(r.num(tv, "pan", ctx));
+        t.volumeDb = gainFromFile(r.num(tv, "volumeDb", ctx));
+        t.pan = panFromFile(r.num(tv, "pan", ctx));
         t.mute = r.boolean(tv, "mute", ctx);
         t.solo = r.boolean(tv, "solo", ctx);
         auto* clips = r.array(tv, "clips", ctx);
         if (r.failed()) return fail();
+        if (!trackIds.insert(t.id).second)
+        {
+            error = "Duplicate track id \"" + t.id + "\"";
+            return std::nullopt;
+        }
+        if (clips->size() > kMaxClips - static_cast<int>(clipIds.size()))
+        {
+            error = "Too many clips: at most " + juce::String(kMaxClips) + " are supported";
+            return std::nullopt;
+        }
         for (auto& cv : *clips)
         {
             Clip c;
@@ -275,10 +410,20 @@ std::optional<Project> loadProject(const juce::File& file, juce::String& error)
             c.start = r.pos(cv, "start", cctx);
             c.sourceOffset = r.pos(cv, "sourceOffset", cctx);
             c.length = r.pos(cv, "length", cctx);
-            c.gainDb = static_cast<float>(r.num(cv, "gainDb", cctx));
+            c.gainDb = gainFromFile(r.num(cv, "gainDb", cctx));
             c.fadeIn = r.pos(cv, "fadeIn", cctx);
             c.fadeOut = r.pos(cv, "fadeOut", cctx);
             if (r.failed()) return fail();
+            if (c.length < 1)
+            {
+                error = "Invalid length: must be at least 1" + cctx;
+                return std::nullopt;
+            }
+            if (!clipIds.insert(c.id).second)
+            {
+                error = "Duplicate clip id \"" + c.id + "\"";
+                return std::nullopt;
+            }
             // Optional keys (format 1 has neither): a missing key means the default.
             if (auto* o = cv.getDynamicObject(); o != nullptr && o->hasProperty("stretch"))
             {
@@ -300,7 +445,7 @@ std::optional<Project> loadProject(const juce::File& file, juce::String& error)
                     return std::nullopt;
                 }
             }
-            if (findSource(p, c.sourceId) == nullptr)
+            if (sourceIds.count(c.sourceId) == 0)
             {
                 error = "Clip \"" + c.id + "\" refers to unknown source \"" + c.sourceId + "\"";
                 return std::nullopt;
