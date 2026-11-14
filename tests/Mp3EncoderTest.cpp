@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <limits>
 #include <juce_audio_formats/juce_audio_formats.h>
 #include "io/Mp3Encoder.h"
 #include <cmath>
@@ -148,4 +149,58 @@ TEST_CASE("mp3 title with non-BMP character uses surrogate pairs", "[mp3]")
     const std::string pair("\x3C\xD8\xB5\xDF", 4);
     REQUIRE(head.find(pair, tit2) != std::string::npos);
     REQUIRE(openMp3(tmp.getFile()) != nullptr);
+}
+
+TEST_CASE("mp3 survives non-finite and over-range samples", "[mp3]")
+{
+    auto buf = makeTone(48000, 48000, 1000.f, 0.5f);
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float inf = std::numeric_limits<float>::infinity();
+    for (int i = 1000; i < 48000; i += 997)
+    {
+        buf.setSample(0, i, nan);
+        buf.setSample(1, i + 1, i % 2 == 0 ? inf : -inf);
+        buf.setSample(0, i + 2, 1.0e30f);
+        buf.setSample(1, i + 3, -1.0e30f);
+    }
+    // A whole block of NaN as well.
+    for (int i = 20000; i < 24096; ++i)
+        buf.setSample(0, i, nan);
+
+    juce::TemporaryFile tmp(".mp3");
+    juce::String err;
+    REQUIRE(encode(tmp.getFile(), 48000, 192, "t", buf, err));
+    auto r = openMp3(tmp.getFile());
+    REQUIRE(r != nullptr);
+    REQUIRE(std::abs((int) r->lengthInSamples - 48000) <= 2304);
+
+    juce::AudioBuffer<float> out(2, 48000);
+    r->read(&out, 0, 48000, 0, true, true);
+    bool sane = true;
+    for (int c = 0; c < 2; ++c)
+        for (int i = 0; i < 48000; ++i)
+            sane = sane && std::isfinite(out.getSample(c, i)) && std::abs(out.getSample(c, i)) < 4.0f;
+    CHECK(sane);
+}
+
+TEST_CASE("mp3 finish leaves a file whose size matches what was written", "[mp3]")
+{
+    juce::TemporaryFile tmp(".mp3");
+    juce::String err;
+    // Pre-existing longer content must be truncated away by open().
+    REQUIRE(tmp.getFile().replaceWithData(juce::MemoryBlock(size_t(1) << 20, true).getData(), size_t(1) << 20));
+    REQUIRE(encode(tmp.getFile(), 44100, 192, "t", makeTone(44100, 4410, 440.f, 0.3f), err));
+    CHECK(tmp.getFile().getSize() < (1 << 20));
+    CHECK(openMp3(tmp.getFile()) != nullptr);
+}
+
+TEST_CASE("mp3 open reports a file it cannot write", "[mp3]")
+{
+    juce::TemporaryFile tmp(".dir");
+    REQUIRE(tmp.getFile().createDirectory().wasOk()); // a directory cannot be opened as an output file
+    Mp3Encoder enc;
+    juce::String err;
+    CHECK_FALSE(enc.open(tmp.getFile(), 48000, 192, "t", err));
+    CHECK(err.contains(tmp.getFile().getFullPathName()));
+    tmp.getFile().deleteRecursively();
 }
