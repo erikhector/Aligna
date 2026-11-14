@@ -161,3 +161,51 @@ TEST_CASE("stale detection", "[alignresults]")
         REQUIRE(isStale(p, ref, g));
     }
 }
+
+TEST_CASE("applyAlignments trims the head when the aligned start is before the project start", "[alignresults]")
+{
+    for (double stretch : { 1.0, 2.0 })
+    {
+        CAPTURE(stretch);
+        auto p = twoClips();
+        auto* c = findClip(p, "c1"); // start 1000, length 50000
+        c->stretch = stretch;
+        c->sourceOffset = 200;
+        c->fadeIn = 49900;
+
+        REQUIRE(applyAlignments(p, { { "c1", -300 } }));
+        c = findClip(p, "c1");
+        CHECK(c->start == 0);
+        CHECK(c->sourceOffset == 500); // the sample that was 300 in now sits at 0: audio lands where asked
+        CHECK(c->length == 49700);
+        CHECK(c->fadeIn <= c->length);
+        int ti = -1;
+        findClip(p, "c1", &ti);
+        CHECK(ti == 1);
+        CHECK(findClip(p, "c0")->start == 0);
+        CHECK(findClip(p, "c0")->length == 50000);
+    }
+
+    // Nothing would remain: skipped, unchanged.
+    auto p = twoClips();
+    CHECK_FALSE(applyAlignments(p, { { "c1", -50000 } }));
+    CHECK_FALSE(applyAlignments(p, { { "c1", -60000 } }));
+    CHECK(findClip(p, "c1")->start == 1000);
+    CHECK(findClip(p, "c1")->sourceOffset == 0);
+    CHECK(findClip(p, "c1")->length == 50000);
+
+    // A clip already at 0 that must lose its head counts as a change.
+    CHECK(applyAlignments(p, { { "c0", -10 } }));
+    CHECK(findClip(p, "c0")->start == 0);
+    CHECK(findClip(p, "c0")->sourceOffset == 10);
+    CHECK(findClip(p, "c0")->length == 49990);
+}
+
+TEST_CASE("a row whose start is before the project start says it will be trimmed", "[alignresults]")
+{
+    const auto r = row(1000, -480, 5.0f);
+    CHECK(offsetSamples(r) == -1480);
+    CHECK(shouldPreTick(r));
+    CHECK(describeRow(r, 48000.0).contains("start trimmed by 10.000 ms"));
+    CHECK_FALSE(describeRow(row(1000, 0, 5.0f), 48000.0).contains("trimmed"));
+}

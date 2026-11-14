@@ -435,3 +435,118 @@ TEST_CASE("makeSnapshot: a stretched clip whose buffer is not ready is silent")
     auto pb = render(*plain, 0, 48000);
     CHECK(pb.getMagnitude(0, 48000) > 0.1f);
 }
+
+TEST_CASE("makeSnapshot: a stretched clip whose render failed is silent and listed as failed")
+{
+    StretchFixture f;
+    StretchCache cache(size_t(2) << 30,
+                       [](const juce::AudioBuffer<float>&, double, double,
+                          const std::function<bool(float)>&) -> std::optional<juce::AudioBuffer<float>> {
+                           return std::nullopt;
+                       });
+    const auto key = bufferKey(f.stretched);
+
+    auto before = makeSnapshot(f.p, f.pool, cache);
+    CHECK(before->failedStretch.empty()); // not rendered yet is not "failed"
+
+    cache.require(f.p, f.pool);
+    cache.waitForIdle();
+    REQUIRE(cache.hasFailed(key));
+    CHECK(countStretching(f.p, f.pool, cache) == 0);
+
+    auto s = makeSnapshot(f.p, f.pool, cache);
+    CHECK(s->audio.count(key) == 0);
+    CHECK(s->failedStretch.count(key) == 1);
+    CHECK(s->failedStretch.size() == 1);
+
+    // Export is not blocked: the failed clip is silent, the plain clip of the other track is there.
+    auto out = tmpOut("aligna_mix_failed_stretch.wav");
+    juce::String err;
+    REQUIRE(exportMix(*s, out, wavSettings(16), err));
+    auto r = openAny(out);
+    REQUIRE(r != nullptr);
+    CHECK(r->lengthInSamples == 96000);
+    juce::AudioBuffer<float> got(2, 96000);
+    r->read(&got, 0, 96000, 0, true, true);
+    CHECK(got.getMagnitude(0, 48000) > 0.1f);
+    CHECK_THAT(got.getMagnitude(48000, 48000), WithinAbs(0, 1e-9));
+    r.reset();
+    out.deleteFile();
+}
+
+TEST_CASE("exportMix replaces an existing file and leaves no tmp")
+{
+    for (bool mp3 : { false, true })
+    {
+        CAPTURE(mp3);
+        auto s = sineMix(48000, 24000);
+        auto f = tmpOut(mp3 ? "aligna_mix_replace.mp3" : "aligna_mix_replace.wav");
+        REQUIRE(f.replaceWithText("the previous export"));
+        juce::String err;
+        REQUIRE(exportMix(*s, f, mp3 ? mp3Settings() : wavSettings(24), err));
+        CHECK_FALSE(f.getSiblingFile(f.getFileName() + ".tmp").exists());
+        auto r = openAny(f);
+        REQUIRE(r != nullptr);
+        if (! mp3)
+            CHECK(r->lengthInSamples == 24000);
+        r.reset();
+        f.deleteFile();
+    }
+}
+
+TEST_CASE("exportMix: a failed or cancelled export leaves the existing file untouched")
+{
+    auto s = sineMix(48000, 24000);
+    for (int how = 0; how < 3; ++how)
+    {
+        CAPTURE(how);
+        auto f = tmpOut(how == 0 ? "aligna_mix_keep.wav" : "aligna_mix_keep.mp3");
+        REQUIRE(f.replaceWithText("the previous export"));
+        juce::String err;
+        if (how == 0)
+            CHECK_FALSE(exportMix(*s, f, wavSettings(24), err, [](float) { return false; }));
+        else if (how == 1)
+            CHECK_FALSE(exportMix(*s, f, mp3Settings(), err, [](float) { return false; }));
+        else
+        {
+            // The encoder's own reason reaches the caller instead of a generic message.
+            CHECK_FALSE(exportMix(*s, f, mp3Settings(100), err));
+            CHECK(err == "Unsupported MP3 bitrate: 100 kbps.");
+        }
+        CHECK(f.loadFileAsString() == "the previous export");
+        CHECK_FALSE(f.getSiblingFile(f.getFileName() + ".tmp").exists());
+        f.deleteFile();
+    }
+}
+
+TEST_CASE("exportMix: when the finished export cannot be put in place, nothing is lost")
+{
+    for (bool mp3 : { false, true })
+    {
+        CAPTURE(mp3);
+        auto s = sineMix(48000, 24000);
+        // The destination is a non-empty directory: it cannot be replaced by a file.
+        auto out = juce::File::getSpecialLocation(juce::File::tempDirectory)
+                       .getChildFile("aligna_mix_blocked_" + juce::Uuid().toString() + (mp3 ? ".mp3" : ".wav"));
+        REQUIRE(out.createDirectory().wasOk());
+        auto keep = out.getChildFile("keep.txt");
+        REQUIRE(keep.replaceWithText("old"));
+        const auto tmp = out.getSiblingFile(out.getFileName() + ".tmp");
+
+        juce::String err;
+        CHECK_FALSE(exportMix(*s, out, mp3 ? mp3Settings() : wavSettings(24), err));
+        CHECK(keep.loadFileAsString() == "old"); // what was there is still there
+        REQUIRE(tmp.existsAsFile());             // and so is the finished render
+        CHECK(err.contains(tmp.getFullPathName()));
+        juce::AudioFormatManager fm; // by content: the ".tmp" name hides the format
+        fm.registerBasicFormats();
+        std::unique_ptr<juce::AudioFormatReader> r(fm.createReaderFor(tmp.createInputStream()));
+        REQUIRE(r != nullptr); // complete and readable
+        if (! mp3)
+            CHECK(r->lengthInSamples == 24000);
+        r.reset();
+
+        tmp.deleteFile();
+        out.deleteRecursively();
+    }
+}

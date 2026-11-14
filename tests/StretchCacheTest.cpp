@@ -1,5 +1,8 @@
 #include "engine/StretchCache.h"
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
+#include <atomic>
+#include <new>
 #include <juce_events/juce_events.h>
 #include <cmath>
 
@@ -319,4 +322,115 @@ TEST_CASE("StretchCache::clear drops entries and ignores late renders", "[stretc
     cache.require(p, pool);
     cache.waitForIdle();
     CHECK(cache.get(bufferKey(clip)) != nullptr);
+}
+
+TEST_CASE("StretchCache: a failed render is remembered, not retried and not pending", "[stretchcache]")
+{
+    juce::ScopedJuceInitialiser_GUI gui;
+    TempDir t;
+    SourcePool pool;
+    Project p;
+    const auto clip = addSineSource(p, pool, t.dir, 2.0);
+    const auto key = bufferKey(clip);
+
+    const bool throws = GENERATE(false, true);
+    CAPTURE(throws);
+    std::atomic<int> calls { 0 };
+    std::atomic<bool> fail { true };
+    StretchCache cache(size_t(2) << 30,
+                       [&](const juce::AudioBuffer<float>& in, double, double ratio,
+                           const std::function<bool(float)>&) -> std::optional<juce::AudioBuffer<float>> {
+                           ++calls;
+                           if (fail.load())
+                           {
+                               if (throws)
+                                   throw std::bad_alloc();
+                               return std::nullopt;
+                           }
+                           return juce::AudioBuffer<float>(in.getNumChannels(), expectedLen(ratio));
+                       });
+    int ready = 0;
+    cache.onReady = [&] { ++ready; };
+
+    cache.require(p, pool);
+    CHECK(cache.isPending(key));
+    CHECK(countStretching(p, pool, cache) == 1);
+    cache.waitForIdle();
+
+    CHECK(calls == 1);
+    CHECK(ready >= 1); // listeners hear about the failure, so they can stop waiting
+    CHECK(cache.get(key) == nullptr);
+    CHECK(cache.hasFailed(key));
+    CHECK(cache.numFailed() == 1);
+    CHECK_FALSE(cache.isPending(key));
+    CHECK(countStretching(p, pool, cache) == 0); // nothing left to wait for: export/align are not blocked
+    CHECK(countStretchFailed(p, pool, cache) == 1);
+
+    // Requiring the same project again does not queue it again.
+    for (int i = 0; i < 3; ++i)
+    {
+        cache.require(p, pool);
+        CHECK_FALSE(cache.isPending(key));
+        cache.waitForIdle();
+    }
+    CHECK(calls == 1);
+    CHECK(cache.hasFailed(key));
+
+    SECTION("it is retried once the key was no longer needed in between")
+    {
+        fail = false;
+        cache.require(withStretch(p, 1.0), pool);
+        CHECK_FALSE(cache.hasFailed(key));
+        CHECK(cache.numFailed() == 0);
+        cache.require(p, pool);
+        CHECK(cache.isPending(key));
+        cache.waitForIdle();
+        CHECK(calls == 2);
+        CHECK(cache.get(key) != nullptr);
+        CHECK_FALSE(cache.hasFailed(key));
+        CHECK(countStretching(p, pool, cache) == 0);
+        CHECK(countStretchFailed(p, pool, cache) == 0);
+    }
+    SECTION("clear() forgets the failure")
+    {
+        fail = false;
+        cache.clear();
+        CHECK_FALSE(cache.hasFailed(key));
+        CHECK(countStretching(p, pool, cache) == 1);
+        cache.require(p, pool);
+        cache.waitForIdle();
+        CHECK(calls == 2);
+        CHECK(cache.get(key) != nullptr);
+    }
+    SECTION("other keys still render while one has failed")
+    {
+        fail = false;
+        Clip c2 = clip;
+        c2.id = newId();
+        c2.stretch = 3.0;
+        p.tracks[0].clips.push_back(c2);
+        cache.require(p, pool);
+        cache.waitForIdle();
+        CHECK(cache.get(bufferKey(c2)) != nullptr);
+        CHECK(cache.hasFailed(key)); // still needed, still not retried
+        CHECK(calls == 2);
+        CHECK(countStretching(p, pool, cache) == 0);
+        CHECK(countStretchFailed(p, pool, cache) == 1);
+    }
+}
+
+TEST_CASE("StretchCache: a cancelled render is not a failure", "[stretchcache]")
+{
+    juce::ScopedJuceInitialiser_GUI gui;
+    TempDir t;
+    SourcePool pool;
+    Project p;
+    const auto clip = addSineSource(p, pool, t.dir, 2.0, 10 * 48000);
+
+    StretchCache cache;
+    cache.require(p, pool);
+    cache.require(withStretch(p, 1.0), pool); // cancels it
+    cache.waitForIdle();
+    CHECK(cache.numFailed() == 0);
+    CHECK_FALSE(cache.hasFailed(bufferKey(clip)));
 }

@@ -23,6 +23,8 @@ std::shared_ptr<const MixSnapshot> makeSnapshot(const Project& p, const SourcePo
                 d = nearlyEqual(c.stretch, 1.0) ? pool.get(c.sourceId) : cache.get(key);
             if (d != nullptr)
                 snap->audio[key] = d;
+            else if (s != nullptr && ! s->missing && cache.hasFailed(key))
+                snap->failedStretch.insert(key);
             snap->clipAudio[ti].push_back(d.get()); // owned by snap->audio
         }
     }
@@ -180,14 +182,14 @@ bool exportMix(const MixSnapshot& snap, const juce::File& out, const ExportSetti
     auto encoderPtr = std::make_unique<Mp3Encoder>();
     auto& encoder = *encoderPtr;
     std::unique_ptr<juce::AudioFormatWriter> writer;
+    juce::FileOutputStream* wavStream = nullptr; // owned by `writer`
     if (mp3)
     {
         if (! encoder.open(tmp, snap.project.sampleRate, settings.kbps, settings.title, error))
         {
             encoderPtr.reset();
             tmp.deleteFile();
-            error = "Could not write " + out.getFullPathName();
-            return false;
+            return false; // `error` already says what the encoder could not do
         }
     }
     else
@@ -208,7 +210,7 @@ bool exportMix(const MixSnapshot& snap, const juce::File& out, const ExportSetti
             error = "Could not create WAV writer";
             return false;
         }
-        stream.release(); // owned by writer
+        wavStream = stream.release(); // owned by writer
     }
 
     constexpr int blockSize = 4096;
@@ -234,18 +236,31 @@ bool exportMix(const MixSnapshot& snap, const juce::File& out, const ExportSetti
         }
     }
     if (ok && mp3)
-        ok = encoder.finish(error);
-    writer.reset(); // flush + close
+        ok = encoder.finish(error); // also checks that the whole file reached the disk
+    if (ok && ! mp3)
+    {
+        // Final header and buffered audio out, then check that all of it really reached the disk (a full disk can
+        // otherwise pass unnoticed) before the old file is replaced.
+        const bool headerOk = writer->flush();
+        wavStream->flush();
+        ok = headerOk && wavStream->getStatus().wasOk() && tmp.getSize() == wavStream->getPosition();
+        if (! ok)
+            error = "Write failed";
+    }
+    writer.reset(); // close
     encoderPtr.reset(); // release the file before deleting or moving it
     if (! ok)
     {
         tmp.deleteFile();
         return false;
     }
-    if (! tmp.moveFileTo(out))
+    // Replace in one step: an existing `out` is never deleted first. If that fails the finished render is kept, so
+    // neither the old nor the new export is lost.
+    if (! tmp.replaceFileIn(out))
     {
-        tmp.deleteFile();
         error = "Could not write " + out.getFullPathName();
+        if (tmp.existsAsFile())
+            error += ". The finished export was kept as " + tmp.getFullPathName();
         return false;
     }
     return true;
